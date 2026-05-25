@@ -1,0 +1,29 @@
+Implemented the documentation-only adaptation deliverables.
+
+Created:
+- [CODEX_OPENASSTAI_OPENNEBULA_ADAPTATION_PLAN.md](/Users/minihanshi/project/openasstai/CODEX_OPENASSTAI_OPENNEBULA_ADAPTATION_PLAN.md)
+- [.codex-openasstai-adaptation-result.txt](/Users/minihanshi/project/openasstai/.codex-openasstai-adaptation-result.txt)
+
+The plan covers the required architecture: Railway runs only the OpenAsstAI marketplace/API/proxy layer, while OpenNebula controllers and KVM/LXC hosts run on external provider infrastructure. It recommends a custom Node/TypeScript Railway app over wrapping FireEdge, defines provider onboarding, user rental/provisioning flows, adapter interfaces, data model, env vars, P0/P1 APIs, repo layout options, phased Codex implementation, and risks.
+
+Verification:
+- Did not install OpenNebula.
+- Did not run destructive git commands.
+- Required sections were checked in the plan.
+
+Git status:
+```text
+?? .codex-openasstai-adaptation-result.txt
+?? .codex-openasstai-adaptation-run.log
+?? .codex-railway-opennebula-run.log
+?? .codex-railway-opennebula-run2.log
+?? CODEX_OPENASSTAI_ADAPTATION_ADDENDUM.md
+?? CODEX_OPENASSTAI_OPENNEBULA_ADAPTATION_MISSION.md
+?? CODEX_OPENASSTAI_OPENNEBULA_ADAPTATION_PLAN.md
+```
+
+Diff stat for files I added:
+```text
+CODEX_OPENASSTAI_OPENNEBULA_ADAPTATION_PLAN.md | 858 insertions(+)
+.codex-openasstai-adaptation-result.txt         |   6 insertions(+)
+```
