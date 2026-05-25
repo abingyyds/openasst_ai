@@ -1,4 +1,5 @@
 const TOKEN_KEY = "openasstai.token";
+export const LANGUAGE_KEY = "openasstai.language";
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || "";
@@ -10,6 +11,17 @@ export function setToken(token) {
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
+}
+
+export function getLanguage() {
+  const stored = localStorage.getItem(LANGUAGE_KEY);
+  if (stored === "en" || stored === "zh-CN") return stored;
+  if (stored === "zh") return "zh-CN";
+  return "zh-CN";
+}
+
+export function setLanguagePreference(language) {
+  localStorage.setItem(LANGUAGE_KEY, language === "en" ? "en" : "zh-CN");
 }
 
 export async function apiRequest(path, { token, method = "GET", headers = {}, body } = {}) {
@@ -49,13 +61,19 @@ export function formatMoney(cents = 0) {
 
 export function formatHours(hours = 0) {
   const value = Number(hours || 0);
-  if (value < 1) return `${Math.round(value * 60)}m`;
-  return `${value.toFixed(value >= 10 ? 0 : 1)}h`;
+  const language = getLanguage();
+  if (value < 1) {
+    const minutes = Math.round(value * 60);
+    return language === "zh-CN" ? `${minutes} 分钟` : `${minutes}m`;
+  }
+  const hoursValue = value.toFixed(value >= 10 ? 0 : 1);
+  return language === "zh-CN" ? `${hoursValue} 小时` : `${hoursValue}h`;
 }
 
 export function formatTime(value) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("en-US", {
+  const language = getLanguage();
+  return new Intl.DateTimeFormat(language === "zh-CN" ? "zh-CN" : "en-US", {
     dateStyle: "short",
     timeStyle: "short"
   }).format(new Date(value));
@@ -81,6 +99,9 @@ export function parseHashRoute() {
   if (parts[0] === "provider") return { page: "provider" };
   if (parts[0] === "admin") return { page: "admin" };
   if (parts[0] === "auth") return { page: "auth" };
+  if (parts[0] === "agent-market") return { page: "agent-market" };
+  if (parts[0] === "session" && parts[1]) return { page: "session", id: parts[1] };
+  if (parts[0] === "sessions") return { page: "sessions" };
   return { page: parts[0] || "market" };
 }
 

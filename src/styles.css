@@ -353,6 +353,41 @@ button.brand {
   white-space: nowrap;
 }
 
+.language-switcher {
+  min-height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.18rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--muted-strong);
+  white-space: nowrap;
+}
+
+.language-switcher > svg {
+  margin: 0 0.25rem;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.language-switcher button {
+  min-height: 1.78rem;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  padding: 0.3rem 0.5rem;
+  box-shadow: none;
+  font-size: 0.82rem;
+  color: var(--muted-strong);
+}
+
+.language-switcher button.active {
+  background: var(--text);
+  color: white;
+}
+
 .content {
   width: 100%;
   max-width: 1440px;
@@ -1373,6 +1408,10 @@ button.item:hover:not(:disabled) {
     gap: 0.35rem;
   }
 
+  .topbar-language {
+    max-width: 42vw;
+  }
+
   .user-chip {
     display: none;
   }
@@ -1389,6 +1428,15 @@ button.item:hover:not(:disabled) {
   .chat-form button,
   .item .toolbar button {
     width: 100%;
+  }
+
+  .language-switcher {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .topbar-language {
+    width: auto;
   }
 
   .item-row {

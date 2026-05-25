@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -16,6 +16,7 @@ import {
   FileText,
   Gauge,
   KeyRound,
+  Languages,
   LayoutDashboard,
   ListRestart,
   LogOut,
@@ -46,8 +47,10 @@ import {
   formatHours,
   formatMoney,
   formatTime,
+  getLanguage,
   getToken,
   parseHashRoute,
+  setLanguagePreference,
   setRoute,
   setToken,
   statusTone
@@ -62,10 +65,543 @@ const channelLabels = {
 };
 
 const modelProviders = ["openai", "anthropic", "openrouter", "azure-openai", "custom"];
+const LanguageContext = createContext({
+  language: "zh-CN",
+  setLanguage: () => {},
+  t: (value) => value
+});
+
+const translations = {
+  zh: {
+    "Official agent workspace marketplace": "官方 Agent 工作空间市场",
+    "Language": "语言",
+    "COSS-style shell for the Phase 1 MVP": "面向第一阶段 MVP 的 COSS 风格控制台",
+    "Official agent workspaces, setup, and control.": "官方 Agent 工作空间、配置与控制。",
+    "Browse official templates, launch a Linux workspace, configure models and channels, and manage the instance from one quiet control surface.": "浏览官方模板，启动 Linux 工作空间，配置模型与通道，并在一个清晰的控制台中管理实例。",
+    "Discover": "发现",
+    "Inspect official agents, provider listings, plans, and runtime hints.": "查看官方 Agent、服务商上架内容、套餐和运行时提示。",
+    "Operate": "运维",
+    "Open model, channel, terminal, and log controls from one shell.": "在一个控制台中打开模型、通道、终端和日志控制。",
+    "Runtime": "运行时",
+    "Local sandbox": "本地沙箱",
+    "Docker adapter preserved": "保留 Docker 适配边界",
+    "Templates": "模板",
+    "Hermes / OpenClaw": "Hermes / OpenClaw",
+    "Channels": "通道",
+    "Web Chat ready": "Web Chat 已就绪",
+    "Billing": "计费",
+    "Estimate only": "仅估算",
+    "No payment integration": "未接入支付",
+    "workspace launch": "工作空间启动",
+    "$ openasst marketplace select hermes": "$ openasst marketplace select hermes",
+    "$ provision --plan starter --channel web_chat": "$ provision --plan starter --channel web_chat",
+    "status: workspace ready": "状态：工作空间已就绪",
+    "Demo credentials are prefilled for local evaluation.": "已预填演示账号，便于本地评估。",
+    "Demo user": "演示用户",
+    "Demo admin": "演示管理员",
+    "Sign in": "登录",
+    "Create account": "创建账号",
+    "Email": "邮箱",
+    "Password": "密码",
+    "Working": "处理中",
+    "Marketplace": "市场",
+    "Instances": "实例",
+    "Provider": "服务商",
+    "Admin": "管理员",
+    "Instance": "实例",
+    "Workspace control plane": "工作空间控制平面",
+    "Official templates, instance setup, provider nodes, and admin controls in one place.": "官方模板、实例配置、服务商节点和管理员控制集中在一处。",
+    "Live shell": "在线控制台",
+    "Phase 1 MVP": "第一阶段 MVP",
+    "Signed in as": "当前登录",
+    "Sign out": "退出登录",
+    "Close navigation": "关闭导航",
+    "Open navigation": "打开导航",
+    "OpenAsstAI console": "OpenAsstAI 控制台",
+    "Online": "在线",
+    "Navigate": "导航",
+    "Agent marketplace": "Agent 市场",
+    "Choose an official or provider-published Agent, inspect setup details, and launch a callable workspace from one control surface.": "选择官方或服务商发布的 Agent，查看配置细节，并从一个控制台启动可调用的工作空间。",
+    "Launch selected": "启动所选项",
+    "Creating": "创建中",
+    "Refresh": "刷新",
+    "Official": "官方",
+    "Platform templates": "平台模板",
+    "Published agents": "已发布 Agent",
+    "Frameworks": "框架",
+    "Available now": "当前可用",
+    "Starts at": "起价",
+    "Lowest plan": "最低套餐",
+    "launch recipe": "启动配方",
+    "$ template loading": "$ template loading",
+    "$ plan select": "$ plan select",
+    "$ channel web_chat": "$ channel web_chat",
+    "Loading template metadata": "正在加载模板元数据",
+    "Selected": "已选择",
+    "Loading": "加载中",
+    "Official and approved provider Agents with currently available node capacity": "当前有节点容量的官方和已审核服务商 Agent",
+    "Search templates, capabilities, or framework": "搜索模板、能力或框架",
+    "All frameworks": "全部框架",
+    "Custom": "自定义",
+    "Loading templates": "正在加载模板",
+    "Fetching marketplace listings.": "正在获取市场列表。",
+    "No matching templates": "没有匹配模板",
+    "Adjust the search or framework filter.": "调整搜索词或框架筛选。",
+    "From": "起",
+    "Launch workspace": "启动工作空间",
+    "Allocate an official Linux node and seed the selected template": "分配官方 Linux 节点并初始化所选模板",
+    "Install": "安装",
+    "Start": "启动",
+    "Platform-managed start": "平台托管启动",
+    "Workspace health check": "工作空间健康检查",
+    "Default": "默认",
+    "channels": "个通道",
+    "skills": "个技能",
+    "Provisioning notes": "开通说明",
+    "Demo sandbox": "演示沙箱",
+    "This phase provisions a platform-managed sandbox and seeds the selected template, default model, channels, and skills. No raw SSH password is stored or used.": "此阶段会开通平台托管沙箱，并初始化所选模板、默认模型、通道和技能。不会存储或使用原始 SSH 密码。",
+    "Install command": "安装命令",
+    "This is a demo install/start hint, not a direct server takeover flow.": "这是演示安装/启动提示，不是直接接管服务器的流程。",
+    "Start command": "启动命令",
+    "Instance name": "实例名称",
+    "Plan": "套餐",
+    "CPU": "CPU",
+    "Resource limit": "资源限制",
+    "Memory": "内存",
+    "Workspace memory": "工作空间内存",
+    "Region": "区域",
+    "Official node": "官方节点",
+    "Provider node": "服务商节点",
+    "Create and launch": "创建并启动",
+    "Select a template": "选择模板",
+    "Pick an agent from the marketplace list to inspect launch details.": "从市场列表选择一个 Agent 来查看启动详情。",
+    "Provider console": "服务商控制台",
+    "Apply for provider access, add nodes, and manage the install token handoff.": "申请服务商权限，添加节点，并管理安装令牌交接。",
+    "Provider summary": "服务商摘要",
+    "Profile status, node count, and ledger snapshot": "资料状态、节点数量和账本快照",
+    "Profile": "资料",
+    "Apply first": "请先申请",
+    "Nodes": "节点",
+    "Agents": "Agent",
+    "active in marketplace": "个已在市场上架",
+    "Ledger": "账本",
+    "runtime h": "运行小时",
+    "Provider profile": "服务商资料",
+    "Approved providers can add nodes": "审核通过的服务商可添加节点",
+    "Display name": "显示名称",
+    "Contact": "联系方式",
+    "Payout note": "结算备注",
+    "Save provider info": "保存服务商信息",
+    "Node handoff": "节点交接",
+    "Generate a token and install command for a server you control": "为你控制的服务器生成令牌和安装命令",
+    "Node name": "节点名称",
+    "e.g. shanghai-node-01": "例如 shanghai-node-01",
+    "Memory MB": "内存 MB",
+    "Disk GB": "磁盘 GB",
+    "Price / hour (cents)": "每小时价格（分）",
+    "Public host": "公网主机",
+    "optional public hostname": "可选公网主机名",
+    "Create node token": "创建节点令牌",
+    "Node registration is token-based. The server calls back to the platform with a node agent and heartbeat, and no SSH password is stored.": "节点注册基于令牌。服务器通过节点 Agent 和心跳回调平台，不会存储 SSH 密码。",
+    "Publish Agent": "发布 Agent",
+    "Create a provider-managed marketplace Agent that routes web chat to your healthy node": "创建服务商托管的市场 Agent，将 Web Chat 路由到你的健康节点",
+    "Agent name": "Agent 名称",
+    "e.g. Support Concierge": "例如 Support Concierge",
+    "Framework": "框架",
+    "Marketplace description": "市场描述",
+    "What this Agent does for buyers": "这个 Agent 为买家做什么",
+    "Default model provider": "默认模型供应商",
+    "Default model": "默认模型",
+    "Plan name": "套餐名称",
+    "Agent price / hour (cents)": "Agent 每小时价格（分）",
+    "Publish to marketplace": "发布到市场",
+    "Active provider Agents appear in the marketplace immediately. Purchases are provisioned on provider nodes and Web Chat is dispatched as node tasks.": "启用状态的服务商 Agent 会立即出现在市场中。购买后会在服务商节点上开通，Web Chat 会作为节点任务派发。",
+    "No provider Agents published yet.": "还没有发布服务商 Agent。",
+    "No plan": "无套餐",
+    "One-line callback install for the node agent": "节点 Agent 的一行回调安装命令",
+    "Latest command": "最新命令",
+    "Use this on the server you want to hand to the platform.": "在你要交给平台的服务器上使用此命令。",
+    "After creating a node, copy the install command and run it on the target server.": "创建节点后，复制安装命令并在目标服务器上运行。",
+    "This token is only recoverable from the command shown here. Rotate the token if this browser session is lost.": "此令牌只能从这里显示的命令中取回。如果浏览器会话丢失，请轮换令牌。",
+    "Registration, heartbeat, and approval visibility": "注册、心跳和审核可见性",
+    "No registered nodes yet.": "还没有注册节点。",
+    "unknown": "未知",
+    "no agent": "无 Agent",
+    "Heartbeat": "心跳",
+    "Rotate token": "轮换令牌",
+    "Internal estimate only, no real payment": "仅内部估算，无真实支付",
+    "Gross": "总额",
+    "Platform fee": "平台费用",
+    "Your instances": "你的实例",
+    "Track lifecycle state, rough cost, and open the control console.": "跟踪生命周期状态、粗略费用，并打开控制台。",
+    "New instance": "新建实例",
+    "Instance list": "实例列表",
+    "Open an instance to manage models, channels, skills, and terminal access": "打开实例以管理模型、通道、技能和终端访问",
+    "Loading instances": "正在加载实例",
+    "No instances yet": "还没有实例",
+    "Start from the marketplace to provision a workspace.": "从市场开始开通一个工作空间。",
+    "Open marketplace": "打开市场",
+    "Instance console": "实例控制台",
+    "Workspace tabs": "工作空间标签页",
+    "Configure the instance, inspect logs, or open the terminal": "配置实例、查看日志或打开终端",
+    "Overview": "概览",
+    "Models": "模型",
+    "Skills": "技能",
+    "Terminal": "终端",
+    "Logs": "日志",
+    "Settings": "设置",
+    "Setup Checklist": "配置检查清单",
+    "Complete the setup path in order": "按顺序完成配置流程",
+    "Done": "已完成",
+    "In progress": "进行中",
+    "Planned": "计划中",
+    "Pick a provider and save the API key": "选择供应商并保存 API Key",
+    "Web Chat is active": "Web Chat 已启用",
+    "Enable Web Chat first": "请先启用 Web Chat",
+    "enabled": "已启用",
+    "messages": "条消息",
+    "log entries": "条日志",
+    "Status, plan, node, and current estimate": "状态、套餐、节点和当前估算",
+    "Stop": "停止",
+    "Restart": "重启",
+    "Status": "状态",
+    "runtime state": "运行状态",
+    "Estimate": "估算",
+    "runtime": "运行时",
+    "Node": "节点",
+    "chat/provision via node tasks": "通过节点任务聊天/开通",
+    "Started": "启动时间",
+    "Health": "健康",
+    "Checks provider node reachability and instance state": "检查服务商节点可达性和实例状态",
+    "The local sandbox checks workspace and instance state": "本地沙箱检查工作空间和实例状态",
+    "Health check": "健康检查",
+    "This Agent runs on the provider's registered node. Provisioning, lifecycle actions, and Web Chat are dispatched through node tasks; user-visible replies come from the provider runtime command.": "此 Agent 运行在服务商注册的节点上。开通、生命周期操作和 Web Chat 都通过节点任务派发；用户可见回复来自服务商运行时命令。",
+    "This environment does not have Docker. The Phase 1 MVP uses isolated workspaces to simulate a Linux agent sandbox and keeps the Docker runtime adapter boundary intact.": "当前环境没有 Docker。第一阶段 MVP 使用隔离工作空间模拟 Linux Agent 沙箱，并保留 Docker 运行时适配边界。",
+    "Billing mode": "计费模式",
+    "Internal billing is estimated from runtime and chat tokens. No payment provider is connected.": "内部计费按运行时长和聊天 token 估算，尚未接入支付服务商。",
+    "Next actions": "下一步",
+    "Finish the setup flow in order": "按顺序完成配置流程",
+    "Set the provider and API key in Models": "在模型页设置供应商和 API Key",
+    "Turn on Web Chat in Channels": "在通道页启用 Web Chat",
+    "Install and enable the skills this template expects": "安装并启用该模板所需技能",
+    "Send one chat message to verify model and channel": "发送一条聊天消息来验证模型和通道",
+    "Open Terminal and Logs to confirm runtime health": "打开终端和日志确认运行时健康",
+    "Configure the default model and a user-provided API key": "配置默认模型和用户提供的 API Key",
+    "Model": "模型",
+    "User API key": "用户 API Key",
+    "Clear saved API key": "清除已保存的 API Key",
+    "Save default model": "保存默认模型",
+    "Secret": "密钥",
+    "Saved": "已保存",
+    "Not configured": "未配置",
+    "Web Chat is implemented; external channels remain adapter placeholders": "Web Chat 已实现；外部通道仍为适配器占位",
+    "Console chat is available for this workspace.": "此工作空间可使用控制台聊天。",
+    "Phase 1 keeps the adapter shape here; real external channel access comes later.": "第一阶段保留适配器结构；真实外部通道稍后接入。",
+    "Enable": "启用",
+    "Disable": "禁用",
+    "Preview placeholder": "预览占位",
+    "Dispatches messages to the provider node runtime": "将消息派发到服务商节点运行时",
+    "Talk to the current agent workspace": "与当前 Agent 工作空间对话",
+    "No messages yet": "还没有消息",
+    "Type a message": "输入消息",
+    "Send": "发送",
+    "Waiting for provider runtime reply...": "正在等待服务商运行时回复...",
+    "Provider runtime replied.": "服务商运行时已回复。",
+    "Still waiting for the provider node; refresh chat to check for the reply.": "仍在等待服务商节点；刷新聊天查看回复。",
+    "Task": "任务",
+    "Install, enable, disable, and review built-in skill permissions": "安装、启用、禁用并查看内置技能权限",
+    "Uninstall": "卸载",
+    "Browser terminal connected to the current workspace directory": "连接到当前工作空间目录的浏览器终端",
+    "loading terminal": "正在加载终端",
+    "Reconnect": "重新连接",
+    "Agent Logs": "Agent 日志",
+    "Agent, runtime, deployment, and health-check logs": "Agent、运行时、部署和健康检查日志",
+    "No logs yet": "还没有日志",
+    "Audit Logs": "审计日志",
+    "Important user actions and terminal session summaries": "重要用户操作和终端会话摘要",
+    "No audit entries yet": "还没有审计记录",
+    "system": "系统",
+    "Rename, restart, stop, or destroy the instance": "重命名、重启、停止或销毁实例",
+    "Save": "保存",
+    "Destroy": "销毁",
+    "Usage": "用量",
+    "Runtime, tokens, and estimated cost": "运行时长、token 和估算费用",
+    "Estimated": "已估算",
+    "Tokens": "Token",
+    "Quantity": "数量",
+    "Time": "时间",
+    "No usage records yet. Running instances show live estimates.": "还没有用量记录。运行中的实例会显示实时估算。",
+    "Admin console": "管理员控制台",
+    "Review nodes, templates, providers, instances, usage, and recent errors.": "查看节点、模板、服务商、实例、用量和近期错误。",
+    "Platform summary": "平台摘要",
+    "Counts for users, instances, and templates": "用户、实例和模板计数",
+    "Users": "用户",
+    "Official and provider node resources, heartbeat, and review status": "官方与服务商节点资源、心跳和审核状态",
+    "Type": "类型",
+    "Resources": "资源",
+    "Recent errors": "近期错误",
+    "Latest instance errors": "最新实例错误",
+    "No recent errors": "没有近期错误",
+    "Provider review": "服务商审核",
+    "Approve or reject provider profiles and node handoff": "批准或拒绝服务商资料和节点交接",
+    "No provider applications yet": "还没有服务商申请",
+    "No payout note provided": "未提供结算备注",
+    "nodes": "个节点",
+    "Approve": "批准",
+    "Reject": "拒绝",
+    "Suspend": "暂停",
+    "Template management": "模板管理",
+    "Create, publish, and archive official templates": "创建、发布和归档官方模板",
+    "Template name": "模板名称",
+    "Template description": "模板描述",
+    "Base price / hour (cents)": "基础每小时价格（分）",
+    "Create template": "创建模板",
+    "Publish": "发布",
+    "Draft": "草稿",
+    "Archive": "归档",
+    "Instance management": "实例管理",
+    "Review all platform instances": "查看所有平台实例",
+    "User": "用户",
+    "Starting OpenAsstAI": "正在启动 OpenAsstAI",
+    "Admin access required": "需要管理员权限",
+    "Copy": "复制",
+    "Copied": "已复制",
+    "Ready": "就绪",
+    "Console": "控制台",
+    "Loading instance": "正在加载实例",
+    "Instance not found": "找不到实例",
+    "Choose Agent": "选择 Agent",
+    "Create Instance": "创建实例",
+    "Configure Model": "配置模型",
+    "Enable Channel": "启用通道",
+    "Enable Skills": "启用技能",
+    "Test Chat": "测试聊天",
+    "Terminal / Logs": "终端 / 日志",
+    "no required skills": "无必需技能",
+    "required enabled": "项必需技能已启用",
+    "waiting for assistant reply": "等待助手回复",
+    "send a Web Chat message": "发送一条 Web Chat 消息",
+    "Local sandbox Agent": "本地沙箱 Agent",
+    "processed your Web Chat turn.": "已处理你的 Web Chat 消息。",
+    "Enabled skills": "已启用技能",
+    "Provider runtime failed to answer this chat turn": "服务商运行时未能回复本轮聊天",
+    "消息已发送到 Provider 节点执行，稍后刷新聊天记录查看回复。": "消息已发送到服务商节点执行，稍后刷新聊天记录查看回复。",
+    "Official Shanghai 1": "官方上海 1",
+    "Official Singapore 1": "官方新加坡 1",
+    "Hermes Research Agent": "Hermes 研究 Agent",
+    "OpenClaw Ops Agent": "OpenClaw 运维 Agent",
+    "Built for always-on research, source gathering, document organization, and light automation.": "面向持续研究、资料收集、文档整理和轻量自动化构建。",
+    "An operations-focused agent for troubleshooting, log review, and command-line workflows.": "面向故障排查、日志审阅和命令行流程的运维 Agent。",
+    "local-sandbox adapter": "本地沙箱适配器",
+    "local-sandbox": "本地沙箱",
+    "provider-managed": "服务商托管",
+    "provider-node": "服务商节点",
+    "workspace exists, model config present, web chat channel active": "工作空间存在，模型配置已就绪，Web Chat 通道已启用",
+    "workspace exists, terminal helper installed, log channel enabled": "工作空间存在，终端助手已安装，日志通道已启用",
+    "Start with Web Chat, then add external channels when adapters are ready": "先从 Web Chat 开始，适配器就绪后再添加外部通道",
+    "Best for long-running document Q&A and research workflows": "适合长时间文档问答和研究流程",
+    "Supports external model providers and user-provided API keys": "支持外部模型供应商和用户提供的 API Key",
+    "Best for command-line diagnosis, log summaries, and quick operational tasks": "适合命令行诊断、日志摘要和快速运维任务",
+    "Web Chat is available; Feishu is the first external-channel placeholder": "Web Chat 可用；飞书是首个外部通道占位",
+    "Terminal and Logs are the primary operating surfaces": "终端和日志是主要操作界面",
+    "File Manager": "文件管理器",
+    "Scheduler": "调度器",
+    "Terminal Helper": "终端助手",
+    "Log Reader": "日志阅读器",
+    "Read, organize, and write files inside the instance workspace.": "在实例工作空间内读取、整理和写入文件。",
+    "Store lightweight scheduled tasks and reminders inside the instance.": "在实例内存储轻量级计划任务和提醒。",
+    "Provide explanations, summaries, and safety notes for command-line work.": "为命令行操作提供解释、摘要和安全提示。",
+    "Read instance logs and generate troubleshooting summaries.": "读取实例日志并生成故障排查摘要。",
+    "running": "运行中",
+    "active": "启用",
+    "stopped": "已停止",
+    "disabled": "已禁用",
+    "draft": "草稿",
+    "warning": "警告",
+    "waitlist": "等待列表",
+    "degraded": "降级",
+    "pending": "待处理",
+    "error": "错误",
+    "destroyed": "已销毁",
+    "offline": "离线",
+    "archived": "已归档",
+    "rejected": "已拒绝",
+    "suspended": "已暂停",
+    "approved": "已批准",
+    "provisioning": "开通中",
+    "not_installed": "未安装",
+    "info": "信息",
+    "warn": "警告",
+    "user": "用户",
+    "assistant": "助手",
+    "hour": "小时",
+    "token": "Token",
+    "storage": "存储",
+    "network": "网络",
+    "official": "官方",
+    "ready": "就绪",
+    "missing": "缺失",
+    "connected": "已连接",
+    "connecting": "连接中",
+    "disconnected": "已断开",
+    "Agent Machines": "Agent 机器",
+    "Sessions": "会话",
+    "Agent Machine Marketplace": "Agent 机器市场",
+    "Browse provider agent machines and rent access sessions": "浏览服务商 Agent 机器并租用访问会话",
+    "API Key (BYOK, optional)": "API Key（自带，可选）",
+    "No active listings available": "暂无可用上架项",
+    "Title": "标题",
+    "Agent": "Agent",
+    "Access": "访问模式",
+    "Price": "价格",
+    "Free": "免费",
+    "Rent": "租用",
+    "Session": "会话",
+    "Type a message...": "输入消息...",
+    "Listing": "上架项",
+    "Expires": "过期时间",
+    "My Sessions": "我的会话",
+    "Active access grants and sessions": "活跃的访问授权和会话",
+    "No active sessions": "暂无活跃会话",
+    "View": "查看",
+    "Open Session": "打开会话"
+  }
+};
+
+const zhFallbacks = translations.zh;
+
+function isChinese(language) {
+  return language === "zh-CN";
+}
+
+function useI18n() {
+  return useContext(LanguageContext);
+}
+
+function translate(language, value) {
+  if (value === undefined || value === null) return value;
+  const text = String(value);
+  if (!isChinese(language)) return text;
+  return zhFallbacks[text] || text;
+}
+
+function useTranslator() {
+  return useI18n().t;
+}
+
+function translateStatus(status, language) {
+  return translate(language, status || "unknown");
+}
+
+function translateErrorMessage(message, language) {
+  if (!message || !isChinese(language)) return message;
+  if (zhFallbacks[message]) return zhFallbacks[message];
+  const requestFailed = message.match(/^Request failed \((\d+)\)$/);
+  if (requestFailed) return `请求失败（${requestFailed[1]}）`;
+  return message;
+}
+
+function translateLogMessage(message, language) {
+  if (!message || !isChinese(language)) return message;
+  const text = String(message);
+  if (zhFallbacks[text]) return zhFallbacks[text];
+  if (text.startsWith("Provider runtime failed to answer this chat turn:")) {
+    return text.replace("Provider runtime failed to answer this chat turn:", "服务商运行时未能回复本轮聊天：");
+  }
+  if (text.startsWith("Local sandbox Agent ") && text.includes(" processed your Web Chat turn.")) {
+    return text
+      .replace("Local sandbox Agent ", "本地沙箱 Agent ")
+      .replace(" processed your Web Chat turn.", " 已处理你的 Web Chat 消息。")
+      .replace("Enabled skills:", "已启用技能：")
+      .replace("none", "无");
+  }
+  return text;
+}
+
+function formatChannelsCount(count, language) {
+  return isChinese(language) ? `${count} 个通道` : `${count} channels`;
+}
+
+function formatSkillsCount(count, language) {
+  return isChinese(language) ? `${count} 个技能` : `${count} skills`;
+}
+
+function formatRuntimeHours(value, language) {
+  return isChinese(language) ? `${Math.round(value || 0)} 运行小时` : `${Math.round(value || 0)} runtime h`;
+}
+
+function formatHourlyMoney(cents, language) {
+  return `${formatMoney(cents)}${isChinese(language) ? "/小时" : "/h"}`;
+}
+
+function formatActiveAgents(value, language) {
+  return isChinese(language) ? `${value} 个已在市场上架` : `${value} active in marketplace`;
+}
+
+function formatHealthyNodes(value, language) {
+  return isChinese(language) ? `${value} 个健康` : `${value} healthy`;
+}
+
+function formatMessagesCount(value, language) {
+  return isChinese(language) ? `${value} 条消息` : `${value} messages`;
+}
+
+function formatLogEntriesCount(value, language) {
+  return isChinese(language) ? `${value} 条日志` : `${value} log entries`;
+}
+
+function formatRequiredEnabled(current, total, language) {
+  return isChinese(language) ? `${current}/${total} 项必需技能已启用` : `${current}/${total} required enabled`;
+}
+
+function translateSetupNote(note, language) {
+  if (!note) return note;
+  const requiredMatch = String(note).match(/^(\d+)\/(\d+) required enabled$/);
+  if (requiredMatch) return formatRequiredEnabled(Number(requiredMatch[1]), Number(requiredMatch[2]), language);
+  return translate(language, note);
+}
+
+function LanguageProvider({ children }) {
+  const [language, setLanguageState] = useState(getLanguage);
+
+  const setLanguage = useCallback((nextLanguage) => {
+    const normalized = nextLanguage === "en" ? "en" : "zh-CN";
+    setLanguagePreference(normalized);
+    setLanguageState(normalized);
+  }, []);
+
+  const t = useCallback((value) => translate(language, value), [language]);
+
+  useEffect(() => {
+    document.documentElement.lang = language;
+  }, [language]);
+
+  const value = useMemo(() => ({ language, setLanguage, t }), [language, setLanguage, t]);
+
+  return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;
+}
+
+function LanguageSwitcher({ className = "" }) {
+  const { language, setLanguage, t } = useI18n();
+  const isZh = isChinese(language);
+
+  return (
+    <div className={`language-switcher ${className}`.trim()} role="group" aria-label={t("Language")}>
+      <Languages size={16} aria-hidden="true" />
+      <button type="button" className={isZh ? "active" : ""} onClick={() => setLanguage("zh-CN")} aria-pressed={isZh}>
+        中文
+      </button>
+      <button type="button" className={!isZh ? "active" : ""} onClick={() => setLanguage("en")} aria-pressed={!isZh}>
+        English
+      </button>
+    </div>
+  );
+}
 
 function IconButton({ title, children, ...props }) {
+  const t = useTranslator();
   return (
-    <button className="icon" type="button" title={title} aria-label={title} {...props}>
+    <button className="icon" type="button" title={t(title)} aria-label={t(title)} {...props}>
       {children}
     </button>
   );
@@ -76,18 +612,20 @@ function Pill({ children, tone }) {
 }
 
 function StatusPill({ status }) {
-  return <Pill tone={statusTone(status)}>{status || "unknown"}</Pill>;
+  const { language } = useI18n();
+  return <Pill tone={statusTone(status)}>{translateStatus(status, language)}</Pill>;
 }
 
 function Metric({ label, value, note, icon, tone = "neutral" }) {
+  const t = useTranslator();
   return (
     <div className={`metric ${tone}`.trim()}>
       <div className="metric-top">
-        <div className="metric-label">{label}</div>
+        <div className="metric-label">{t(label)}</div>
         {icon ? <div className="metric-icon">{icon}</div> : null}
       </div>
-      <div className="metric-value">{value}</div>
-      {note ? <div className="metric-note">{note}</div> : null}
+      <div className="metric-value">{typeof value === "string" ? t(value) : value}</div>
+      {note ? <div className="metric-note">{typeof note === "string" ? t(note) : note}</div> : null}
     </div>
   );
 }
@@ -97,19 +635,21 @@ function SurfaceCard({ children, className = "", as: Component = "section" }) {
 }
 
 function FeatureTile({ icon, title, description, meta, tone = "neutral" }) {
+  const t = useTranslator();
   return (
     <div className={`feature-tile ${tone}`.trim()}>
       <div className="feature-icon">{icon}</div>
       <div>
-        <strong>{title}</strong>
-        <p>{description}</p>
-        {meta ? <span>{meta}</span> : null}
+        <strong>{t(title)}</strong>
+        <p>{t(description)}</p>
+        {meta ? <span>{t(meta)}</span> : null}
       </div>
     </div>
   );
 }
 
 function CommandPreview({ title, lines, footer, status = "Ready" }) {
+  const t = useTranslator();
   return (
     <div className="command-preview">
       <div className="command-preview-bar">
@@ -118,26 +658,27 @@ function CommandPreview({ title, lines, footer, status = "Ready" }) {
           <span />
           <span />
         </div>
-        <strong>{title}</strong>
-        <Pill tone="success">{status}</Pill>
+        <strong>{t(title)}</strong>
+        <Pill tone="success">{t(status)}</Pill>
       </div>
       <div className="command-preview-body">
         {lines.map((line, index) => (
           <pre className="code-block" key={`${line}-${index}`}>{line}</pre>
         ))}
       </div>
-      {footer ? <div className="command-preview-footer">{footer}</div> : null}
+      {footer ? <div className="command-preview-footer">{typeof footer === "string" ? t(footer) : footer}</div> : null}
     </div>
   );
 }
 
 function PageHeader({ eyebrow, title, subtitle, actions }) {
+  const t = useTranslator();
   return (
     <div className="page-header">
       <div>
-        {eyebrow ? <div className="page-eyebrow">{eyebrow}</div> : null}
-        <h1>{title}</h1>
-        {subtitle ? <p>{subtitle}</p> : null}
+        {eyebrow ? <div className="page-eyebrow">{t(eyebrow)}</div> : null}
+        <h1>{typeof title === "string" ? t(title) : title}</h1>
+        {subtitle ? <p>{typeof subtitle === "string" ? t(subtitle) : subtitle}</p> : null}
       </div>
       {actions ? <div className="page-actions">{actions}</div> : null}
     </div>
@@ -145,14 +686,15 @@ function PageHeader({ eyebrow, title, subtitle, actions }) {
 }
 
 function Panel({ title, subtitle, icon, actions, children, className = "" }) {
+  const t = useTranslator();
   return (
     <section className={`surface-card panel ${className}`.trim()}>
       <div className="panel-header">
         <div>
           <div className="section-title">
-            {icon} {title}
+            {icon} {t(title)}
           </div>
-          {subtitle ? <div className="section-subtitle">{subtitle}</div> : null}
+          {subtitle ? <div className="section-subtitle">{typeof subtitle === "string" ? t(subtitle) : subtitle}</div> : null}
         </div>
         {actions ? <div className="toolbar">{actions}</div> : null}
       </div>
@@ -162,12 +704,13 @@ function Panel({ title, subtitle, icon, actions, children, className = "" }) {
 }
 
 function Empty({ children, title, icon, action }) {
+  const t = useTranslator();
   return (
     <div className="empty-state">
       <div className="empty-icon">{icon || <CircleHelp size={16} />}</div>
       <div className="empty-copy">
-        <strong>{title || children}</strong>
-        {title && children ? <p>{children}</p> : null}
+        <strong>{typeof (title || children) === "string" ? t(title || children) : title || children}</strong>
+        {title && children ? <p>{typeof children === "string" ? t(children) : children}</p> : null}
       </div>
       {action ? <div className="empty-action">{action}</div> : null}
     </div>
@@ -196,6 +739,7 @@ function copyText(value) {
 
 function CopyableCommand({ label, value, helper }) {
   const [copied, setCopied] = useState(false);
+  const t = useTranslator();
 
   async function handleCopy() {
     await copyText(value);
@@ -206,18 +750,19 @@ function CopyableCommand({ label, value, helper }) {
   return (
     <div className="command-box">
       <div className="item-row">
-        <strong>{label}</strong>
+        <strong>{t(label)}</strong>
         <button type="button" onClick={handleCopy}>
-          {copied ? <Clipboard size={16} /> : <Copy size={16} />} {copied ? "Copied" : "Copy"}
+          {copied ? <Clipboard size={16} /> : <Copy size={16} />} {copied ? t("Copied") : t("Copy")}
         </button>
       </div>
       <pre className="code-block">{value}</pre>
-      {helper ? <div className="muted">{helper}</div> : null}
+      {helper ? <div className="muted">{t(helper)}</div> : null}
     </div>
   );
 }
 
 function FlowStepList({ steps }) {
+  const t = useTranslator();
   return (
     <div className="flow-step-list">
       {steps.map((step, index) => {
@@ -227,12 +772,12 @@ function FlowStepList({ steps }) {
             <div className="flow-step-mark">{icon}</div>
             <div className="flow-step-body">
               <div className="item-row">
-                <strong>{step.label}</strong>
+                <strong>{t(step.label)}</strong>
                 <Pill tone={step.state === "done" ? "success" : step.state === "active" ? "warning" : "neutral"}>
-                  {step.state === "done" ? "Done" : step.state === "active" ? "In progress" : "Planned"}
+                  {step.state === "done" ? t("Done") : step.state === "active" ? t("In progress") : t("Planned")}
                 </Pill>
               </div>
-              <div className="muted">{step.note}</div>
+              <div className="muted">{typeof step.note === "string" ? t(step.note) : step.note}</div>
             </div>
           </div>
         );
@@ -271,6 +816,7 @@ function AuthPage({ onAuth }) {
   const [password, setPassword] = useState("demo123");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const { language, t } = useI18n();
 
   async function submit(event) {
     event.preventDefault();
@@ -284,7 +830,7 @@ function AuthPage({ onAuth }) {
       onAuth(payload.token, payload.user);
       setRoute("market");
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setLoading(false);
     }
@@ -309,13 +855,13 @@ function AuthPage({ onAuth }) {
             <div className="brand-mark">OA</div>
             <div>
               <div className="brand-name">OpenAsstAI</div>
-              <div className="brand-tag">Official agent workspace marketplace</div>
+              <div className="brand-tag">{t("Official agent workspace marketplace")}</div>
             </div>
           </div>
-          <div className="auth-kicker">COSS-style shell for the Phase 1 MVP</div>
-          <h1 className="auth-title">Official agent workspaces, setup, and control.</h1>
+          <div className="auth-kicker">{t("COSS-style shell for the Phase 1 MVP")}</div>
+          <h1 className="auth-title">{t("Official agent workspaces, setup, and control.")}</h1>
           <p className="auth-note">
-            Browse official templates, launch a Linux workspace, configure models and channels, and manage the instance from one quiet control surface.
+            {t("Browse official templates, launch a Linux workspace, configure models and channels, and manage the instance from one quiet control surface.")}
           </p>
           <div className="feature-grid">
             <FeatureTile
@@ -350,28 +896,29 @@ function AuthPage({ onAuth }) {
           />
           <div className="toolbar">
             <button type="button" onClick={() => useDemo("user")}>
-              <Bot size={16} /> Demo user
+              <Bot size={16} /> {t("Demo user")}
             </button>
             <button type="button" onClick={() => useDemo("admin")}>
-              <Shield size={16} /> Demo admin
+              <Shield size={16} /> {t("Demo admin")}
             </button>
+            <LanguageSwitcher />
           </div>
         </section>
         <form className="auth-form surface-card stack" onSubmit={submit}>
           <div className="tabbar">
             <button type="button" className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>
-              Sign in
+              {t("Sign in")}
             </button>
             <button type="button" className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>
-              Create account
+              {t("Create account")}
             </button>
           </div>
           <label className="section">
-            <span className="section-title">Email</span>
+            <span className="section-title">{t("Email")}</span>
             <input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" />
           </label>
           <label className="section">
-            <span className="section-title">Password</span>
+            <span className="section-title">{t("Password")}</span>
             <input
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -381,7 +928,7 @@ function AuthPage({ onAuth }) {
           </label>
           {error ? <Pill tone="danger">{error}</Pill> : null}
           <button className="primary" type="submit" disabled={loading}>
-            <KeyRound size={16} /> {loading ? "Working" : mode === "login" ? "Sign in" : "Create account"}
+            <KeyRound size={16} /> {loading ? t("Working") : mode === "login" ? t("Sign in") : t("Create account")}
           </button>
         </form>
       </div>
@@ -391,8 +938,11 @@ function AuthPage({ onAuth }) {
 
 function Shell({ user, onLogout, route, children }) {
   const [navOpen, setNavOpen] = useState(false);
+  const { t } = useI18n();
   const nav = [
     { id: "market", label: "Marketplace", icon: <Search size={16} /> },
+    { id: "agent-market", label: "Agent Machines", icon: <Zap size={16} /> },
+    { id: "sessions", label: "Sessions", icon: <Activity size={16} /> },
     { id: "instances", label: "Instances", icon: <Boxes size={16} /> },
     { id: "provider", label: "Provider", icon: <ServerCog size={16} /> }
   ];
@@ -403,6 +953,7 @@ function Shell({ user, onLogout, route, children }) {
     route.page === "instance"
       ? "Instance"
       : current?.label || "Marketplace";
+  const translatedPageLabel = t(pageLabel);
 
   useEffect(() => {
     setNavOpen(false);
@@ -416,15 +967,15 @@ function Shell({ user, onLogout, route, children }) {
             <div className="brand-mark">OA</div>
             <div>
               <div className="brand-name">OpenAsstAI</div>
-              <div className="brand-tag">Workspace control plane</div>
+              <div className="brand-tag">{t("Workspace control plane")}</div>
             </div>
           </button>
           <div className="sidebar-copy">
-            Official templates, instance setup, provider nodes, and admin controls in one place.
+            {t("Official templates, instance setup, provider nodes, and admin controls in one place.")}
           </div>
           <div className="sidebar-status">
-            <Pill tone="success">Live shell</Pill>
-            <span>Phase 1 MVP</span>
+            <Pill tone="success">{t("Live shell")}</Pill>
+            <span>{t("Phase 1 MVP")}</span>
           </div>
         </div>
         <nav className="nav-rail">
@@ -436,23 +987,23 @@ function Shell({ user, onLogout, route, children }) {
               onClick={() => setRoute(item.id)}
             >
               {item.icon}
-              <span>{item.label}</span>
+              <span>{t(item.label)}</span>
               <ChevronRight className="nav-chevron" size={15} />
             </button>
           ))}
         </nav>
         <div className="sidebar-card surface-card user-card">
           <div className="sidebar-meta">
-            <span className="muted">Signed in as</span>
+            <span className="muted">{t("Signed in as")}</span>
             <strong>{user.email}</strong>
-            <Pill tone={user.role === "admin" ? "success" : "neutral"}>{user.role}</Pill>
+            <Pill tone={user.role === "admin" ? "success" : "neutral"}>{t(user.role)}</Pill>
           </div>
           <button type="button" className="ghost" onClick={onLogout}>
-            <LogOut size={16} /> Sign out
+            <LogOut size={16} /> {t("Sign out")}
           </button>
         </div>
       </aside>
-      {navOpen ? <button type="button" className="shell-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} /> : null}
+      {navOpen ? <button type="button" className="shell-backdrop" aria-label={t("Close navigation")} onClick={() => setNavOpen(false)} /> : null}
       <div className="shell-main">
         <header className="topbar">
           <div className="topbar-left">
@@ -463,17 +1014,18 @@ function Shell({ user, onLogout, route, children }) {
               <div className="brand-mark">OA</div>
               <div>
                 <div className="brand-name">OpenAsstAI</div>
-                <div className="brand-tag">{pageLabel}</div>
+                <div className="brand-tag">{translatedPageLabel}</div>
               </div>
             </button>
           </div>
           <div className="topbar-center">
-            <div className="topbar-kicker">OpenAsstAI console</div>
-            <div className="topbar-label">{pageLabel}</div>
+            <div className="topbar-kicker">{t("OpenAsstAI console")}</div>
+            <div className="topbar-label">{translatedPageLabel}</div>
           </div>
           <div className="topbar-right">
+            <LanguageSwitcher className="topbar-language" />
             <span className="topbar-status">
-              <Activity size={15} /> Online
+              <Activity size={15} /> {t("Online")}
             </span>
             <span className="user-chip">
               <Shield size={15} /> {user.email}
@@ -488,7 +1040,7 @@ function Shell({ user, onLogout, route, children }) {
       <div className={`mobile-sheet ${navOpen ? "open" : ""}`}>
         <div className="mobile-sheet-panel surface-card">
           <div className="item-row">
-            <strong>Navigate</strong>
+            <strong>{t("Navigate")}</strong>
             <IconButton title="Close navigation" onClick={() => setNavOpen(false)}>
               <X size={16} />
             </IconButton>
@@ -502,10 +1054,11 @@ function Shell({ user, onLogout, route, children }) {
                 onClick={() => setRoute(item.id)}
               >
                 {item.icon}
-                <span>{item.label}</span>
+                <span>{t(item.label)}</span>
               </button>
             ))}
           </nav>
+          <LanguageSwitcher />
         </div>
       </div>
     </div>
@@ -522,6 +1075,7 @@ function MarketPage({ api, onInstanceCreated }) {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
 
   const selected = templates.find((template) => template.id === selectedId) || templates[0];
   const selectedPlan =
@@ -566,11 +1120,11 @@ function MarketPage({ api, onInstanceCreated }) {
         setName(`${payload.templates[0].name} Instance`);
       }
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setLoading(false);
     }
-  }, [api, selectedId]);
+  }, [api, language, selectedId]);
 
   useEffect(() => {
     load();
@@ -598,7 +1152,7 @@ function MarketPage({ api, onInstanceCreated }) {
       onInstanceCreated?.(payload.instance);
       setRoute(`instance/${payload.instance.id}`);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setCreating(false);
     }
@@ -608,15 +1162,15 @@ function MarketPage({ api, onInstanceCreated }) {
     <div className="page-stack">
       <section className="market-hero spotlight-surface surface-card">
         <div className="market-hero-copy">
-          <div className="page-eyebrow">Marketplace</div>
-          <h1>Agent marketplace</h1>
-          <p>Choose an official or provider-published Agent, inspect setup details, and launch a callable workspace from one control surface.</p>
+          <div className="page-eyebrow">{t("Marketplace")}</div>
+          <h1>{t("Agent marketplace")}</h1>
+          <p>{t("Choose an official or provider-published Agent, inspect setup details, and launch a callable workspace from one control surface.")}</p>
           <div className="hero-actions">
             <button type="button" className="primary" onClick={createInstance} disabled={creating || !selected || !selectedPlan}>
-              <Zap size={16} /> {creating ? "Creating" : "Launch selected"}
+              <Zap size={16} /> {creating ? t("Creating") : t("Launch selected")}
             </button>
             <button type="button" onClick={load} disabled={loading}>
-              <RefreshCw size={16} /> Refresh
+              <RefreshCw size={16} /> {t("Refresh")}
             </button>
           </div>
         </div>
@@ -625,7 +1179,7 @@ function MarketPage({ api, onInstanceCreated }) {
             <Metric label="Official" value={marketStats.officialCount} note="Platform templates" icon={<Shield size={15} />} tone="success" />
             <Metric label="Provider" value={marketStats.providerCount} note="Published agents" icon={<ServerCog size={15} />} />
             <Metric label="Frameworks" value={marketStats.frameworkCount || "-"} note="Available now" icon={<Cpu size={15} />} />
-            <Metric label="Starts at" value={`${formatMoney(marketStats.lowPrice)}/h`} note="Lowest plan" icon={<Coins size={15} />} tone="warning" />
+            <Metric label="Starts at" value={formatHourlyMoney(marketStats.lowPrice, language)} note="Lowest plan" icon={<Coins size={15} />} tone="warning" />
           </div>
           <CommandPreview
             title="launch recipe"
@@ -634,7 +1188,7 @@ function MarketPage({ api, onInstanceCreated }) {
               selectedPlan ? `$ plan ${selectedPlan.name} --${selectedPlan.cpu}cpu --${selectedPlan.memoryMb}mb` : "$ plan select",
               selected ? `$ channel ${(selected.defaultChannels || []).map((channel) => channelLabels[channel] || channel).join(", ") || "web_chat"}` : "$ channel web_chat"
             ]}
-            footer={selected ? selected.runtimeKind : "Loading template metadata"}
+            footer={selected ? <>{selected.runtimeKind}</> : "Loading template metadata"}
             status={selected ? "Selected" : "Loading"}
           />
         </div>
@@ -644,12 +1198,12 @@ function MarketPage({ api, onInstanceCreated }) {
         <Panel title="Templates" subtitle="Official and approved provider Agents with currently available node capacity" icon={<Bot size={16} />}>
           <div className="stack">
             <div className="form-2">
-              <input placeholder="Search templates, capabilities, or framework" value={query} onChange={(event) => setQuery(event.target.value)} />
+              <input placeholder={t("Search templates, capabilities, or framework")} value={query} onChange={(event) => setQuery(event.target.value)} />
               <select value={framework} onChange={(event) => setFramework(event.target.value)}>
-                <option value="all">All frameworks</option>
+                <option value="all">{t("All frameworks")}</option>
                 <option value="hermes">Hermes</option>
                 <option value="openclaw">OpenClaw</option>
-                <option value="custom">Custom</option>
+                <option value="custom">{t("Custom")}</option>
               </select>
             </div>
             {error ? <Pill tone="danger">{error}</Pill> : null}
@@ -676,7 +1230,7 @@ function MarketPage({ api, onInstanceCreated }) {
                         <strong>{template.name}</strong>
                       </div>
                       <span className="toolbar">
-                        <Pill tone={template.official ? "success" : "warning"}>{template.official ? "Official" : "Provider"}</Pill>
+                        <Pill tone={template.official ? "success" : "warning"}>{template.official ? t("Official") : t("Provider")}</Pill>
                         <Pill>{template.framework}</Pill>
                         <Pill tone="neutral">{template.runtimeKind}</Pill>
                       </span>
@@ -695,7 +1249,7 @@ function MarketPage({ api, onInstanceCreated }) {
                       <span className="muted">
                         {template.defaultModel.provider}/{template.defaultModel.model}
                       </span>
-                      <strong>From {formatMoney(displayHourlyPrice(template))}/h</strong>
+                      <strong>{t("From")} {formatHourlyMoney(displayHourlyPrice(template), language)}</strong>
                     </div>
                   </button>
                 ))}
@@ -712,17 +1266,21 @@ function MarketPage({ api, onInstanceCreated }) {
                 <div className="section-subtitle">{selected.description}</div>
               </div>
               <div className="grid-3">
-                <Metric label="Install" value={selected.installMethod} note={selected.runtimeKind} />
-                <Metric label="Start" value={selected.startCommand || "Platform-managed start"} note={selected.healthCheck || "Workspace health check"} />
-                <Metric label="Default" value={`${selected.defaultModel.provider}/${selected.defaultModel.model}`} note={`${selected.defaultChannels.length} channels · ${selected.defaultSkills.length} skills`} />
+                <Metric label="Install" value={<>{selected.installMethod}</>} note={<>{selected.runtimeKind}</>} />
+                <Metric
+                  label="Start"
+                  value={selected.startCommand ? <>{selected.startCommand}</> : t("Platform-managed start")}
+                  note={selected.healthCheck ? <>{selected.healthCheck}</> : t("Workspace health check")}
+                />
+                <Metric label="Default" value={`${selected.defaultModel.provider}/${selected.defaultModel.model}`} note={`${formatChannelsCount(selected.defaultChannels.length, language)} · ${formatSkillsCount(selected.defaultSkills.length, language)}`} />
               </div>
               <div className="item">
                 <div className="item-row">
-                  <strong>Provisioning notes</strong>
-                  <Pill tone="warning">Demo sandbox</Pill>
+                  <strong>{t("Provisioning notes")}</strong>
+                  <Pill tone="warning">{t("Demo sandbox")}</Pill>
                 </div>
                 <div className="muted">
-                  This phase provisions a platform-managed sandbox and seeds the selected template, default model, channels, and skills. No raw SSH password is stored or used.
+                  {t("This phase provisions a platform-managed sandbox and seeds the selected template, default model, channels, and skills. No raw SSH password is stored or used.")}
                 </div>
               </div>
               <CopyableCommand
@@ -733,19 +1291,19 @@ function MarketPage({ api, onInstanceCreated }) {
               <CopyableCommand
                 label="Start command"
                 value={selected.startCommand || "Platform-managed start"}
-                helper={selected.healthCheck || "Health checks run against the workspace and runtime state."}
+                helper={selected.healthCheck || "Workspace health check"}
               />
               <div className="form-grid">
                 <label className="section">
-                  <span className="section-title">Instance name</span>
+                  <span className="section-title">{t("Instance name")}</span>
                   <input value={name} onChange={(event) => setName(event.target.value)} />
                 </label>
                 <label className="section">
-                  <span className="section-title">Plan</span>
+                  <span className="section-title">{t("Plan")}</span>
                   <select value={selectedPlanId} onChange={(event) => setSelectedPlanId(event.target.value)}>
                     {(selected.plans || []).map((plan) => (
                       <option key={plan.id} value={plan.id}>
-                        {plan.name} · {plan.cpu} CPU · {plan.memoryMb} MB · {plan.diskGb} GB · {plan.region} · {formatMoney(plan.pricePerHourCents)}/h
+                        {plan.name} · {plan.cpu} CPU · {plan.memoryMb} MB · {plan.diskGb} GB · {plan.region} · {formatHourlyMoney(plan.pricePerHourCents, language)}
                       </option>
                     ))}
                   </select>
@@ -770,7 +1328,7 @@ function MarketPage({ api, onInstanceCreated }) {
                 ))}
               </div>
               <button className="primary" type="button" onClick={createInstance} disabled={creating || !selectedPlan}>
-                <Zap size={16} /> {creating ? "Creating" : "Create and launch"}
+                <Zap size={16} /> {creating ? t("Creating") : t("Create and launch")}
               </button>
             </div>
           ) : (
@@ -791,6 +1349,7 @@ function ProviderPage({ api }) {
   const [busy, setBusy] = useState(false);
   const [installCommand, setInstallCommand] = useState("");
   const [installToken, setInstallToken] = useState("");
+  const { language, t } = useI18n();
   const [draft, setDraft] = useState({
     displayName: "",
     contact: "",
@@ -840,9 +1399,9 @@ function ProviderPage({ api }) {
         }));
       }
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     }
-  }, [api]);
+  }, [api, language]);
 
   useEffect(() => {
     load();
@@ -864,7 +1423,7 @@ function ProviderPage({ api }) {
       setProfile(payload.profile);
       await load();
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setBusy(false);
     }
@@ -898,7 +1457,7 @@ function ProviderPage({ api }) {
       }));
       await load();
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setBusy(false);
     }
@@ -913,7 +1472,7 @@ function ProviderPage({ api }) {
       setInstallCommand(payload.installCommand || "");
       setInstallToken(payload.token || "");
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setBusy(false);
     }
@@ -952,7 +1511,7 @@ function ProviderPage({ api }) {
         templateDescription: ""
       }));
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setBusy(false);
     }
@@ -964,7 +1523,7 @@ function ProviderPage({ api }) {
         eyebrow="Provider"
         title="Provider console"
         subtitle="Apply for provider access, add nodes, and manage the install token handoff."
-        actions={<button type="button" onClick={load}><RefreshCw size={16} /> Refresh</button>}
+        actions={<button type="button" onClick={load}><RefreshCw size={16} /> {t("Refresh")}</button>}
       />
 
       <Panel
@@ -974,10 +1533,10 @@ function ProviderPage({ api }) {
       >
         {error ? <Pill tone="danger">{error}</Pill> : null}
         <div className="grid-3">
-          <Metric label="Profile" value={profile?.status || "none"} note={profile ? profile.displayName : "Apply first"} icon={<BadgeInfo size={15} />} />
-          <Metric label="Nodes" value={nodes.length} note={`${nodes.filter((node) => node.status === "healthy").length} healthy`} icon={<Server size={15} />} tone="success" />
-          <Metric label="Agents" value={templates.length} note={`${templates.filter((template) => template.status === "active").length} active in marketplace`} icon={<Bot size={15} />} />
-          <Metric label="Ledger" value={formatMoney(ledger?.summary?.providerCents || 0)} note={`${Math.round(ledger?.summary?.runtimeHours || 0)} runtime h`} icon={<Coins size={15} />} tone="warning" />
+          <Metric label="Profile" value={translateStatus(profile?.status || "none", language)} note={profile ? profile.displayName : "Apply first"} icon={<BadgeInfo size={15} />} />
+          <Metric label="Nodes" value={nodes.length} note={formatHealthyNodes(nodes.filter((node) => node.status === "healthy").length, language)} icon={<Server size={15} />} tone="success" />
+          <Metric label="Agents" value={templates.length} note={formatActiveAgents(templates.filter((template) => template.status === "active").length, language)} icon={<Bot size={15} />} />
+          <Metric label="Ledger" value={formatMoney(ledger?.summary?.providerCents || 0)} note={formatRuntimeHours(ledger?.summary?.runtimeHours || 0, language)} icon={<Coins size={15} />} tone="warning" />
         </div>
       </Panel>
 
@@ -985,19 +1544,19 @@ function ProviderPage({ api }) {
         <Panel title="Provider profile" subtitle="Approved providers can add nodes" icon={<BadgeInfo size={16} />}>
           <form className="stack" onSubmit={saveProfile}>
             <label className="section">
-              <span className="section-title">Display name</span>
+              <span className="section-title">{t("Display name")}</span>
               <input value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} />
             </label>
             <label className="section">
-              <span className="section-title">Contact</span>
+              <span className="section-title">{t("Contact")}</span>
               <input value={draft.contact} onChange={(event) => setDraft({ ...draft, contact: event.target.value })} />
             </label>
             <label className="section">
-              <span className="section-title">Payout note</span>
+              <span className="section-title">{t("Payout note")}</span>
               <textarea value={draft.payoutNote} onChange={(event) => setDraft({ ...draft, payoutNote: event.target.value })} />
             </label>
             <button className="primary" type="submit" disabled={busy}>
-              <Check size={16} /> Save provider info
+              <Check size={16} /> {t("Save provider info")}
             </button>
           </form>
         </Panel>
@@ -1006,43 +1565,43 @@ function ProviderPage({ api }) {
           <form className="stack" onSubmit={createNode}>
             <div className="form-2">
               <label className="section">
-                <span className="section-title">Node name</span>
-                <input value={draft.nodeName} onChange={(event) => setDraft({ ...draft, nodeName: event.target.value })} placeholder="e.g. shanghai-node-01" />
+                <span className="section-title">{t("Node name")}</span>
+                <input value={draft.nodeName} onChange={(event) => setDraft({ ...draft, nodeName: event.target.value })} placeholder={t("e.g. shanghai-node-01")} />
               </label>
               <label className="section">
-                <span className="section-title">Region</span>
+                <span className="section-title">{t("Region")}</span>
                 <input value={draft.region} onChange={(event) => setDraft({ ...draft, region: event.target.value })} />
               </label>
             </div>
             <div className="form-2">
               <label className="section">
-                <span className="section-title">CPU</span>
+                <span className="section-title">{t("CPU")}</span>
                 <input type="number" value={draft.totalCpu} onChange={(event) => setDraft({ ...draft, totalCpu: Number(event.target.value) })} />
               </label>
               <label className="section">
-                <span className="section-title">Memory MB</span>
+                <span className="section-title">{t("Memory MB")}</span>
                 <input type="number" value={draft.totalMemoryMb} onChange={(event) => setDraft({ ...draft, totalMemoryMb: Number(event.target.value) })} />
               </label>
             </div>
             <div className="form-2">
               <label className="section">
-                <span className="section-title">Disk GB</span>
+                <span className="section-title">{t("Disk GB")}</span>
                 <input type="number" value={draft.totalDiskGb} onChange={(event) => setDraft({ ...draft, totalDiskGb: Number(event.target.value) })} />
               </label>
               <label className="section">
-                <span className="section-title">Price / hour (cents)</span>
+                <span className="section-title">{t("Price / hour (cents)")}</span>
                 <input type="number" value={draft.pricePerHourCents} onChange={(event) => setDraft({ ...draft, pricePerHourCents: Number(event.target.value) })} />
               </label>
             </div>
             <label className="section">
-              <span className="section-title">Public host</span>
-              <input value={draft.publicHost} onChange={(event) => setDraft({ ...draft, publicHost: event.target.value })} placeholder="optional public hostname" />
+              <span className="section-title">{t("Public host")}</span>
+              <input value={draft.publicHost} onChange={(event) => setDraft({ ...draft, publicHost: event.target.value })} placeholder={t("optional public hostname")} />
             </label>
             <button className="primary" type="submit" disabled={busy || !profile}>
-              <ServerCog size={16} /> Create node token
+              <ServerCog size={16} /> {t("Create node token")}
             </button>
             <div className="muted">
-              Node registration is token-based. The server calls back to the platform with a node agent and heartbeat, and no SSH password is stored.
+              {t("Node registration is token-based. The server calls back to the platform with a node agent and heartbeat, and no SSH password is stored.")}
             </div>
           </form>
         </Panel>
@@ -1052,58 +1611,58 @@ function ProviderPage({ api }) {
         <form className="stack" onSubmit={publishTemplate}>
           <div className="form-2">
             <label className="section">
-              <span className="section-title">Agent name</span>
-              <input value={draft.templateName} onChange={(event) => setDraft({ ...draft, templateName: event.target.value })} placeholder="e.g. Support Concierge" />
+              <span className="section-title">{t("Agent name")}</span>
+              <input value={draft.templateName} onChange={(event) => setDraft({ ...draft, templateName: event.target.value })} placeholder={t("e.g. Support Concierge")} />
             </label>
             <label className="section">
-              <span className="section-title">Framework</span>
+              <span className="section-title">{t("Framework")}</span>
               <select value={draft.templateFramework} onChange={(event) => setDraft({ ...draft, templateFramework: event.target.value })}>
-                <option value="custom">custom</option>
-                <option value="hermes">hermes</option>
-                <option value="openclaw">openclaw</option>
+                <option value="custom">{t("Custom")}</option>
+                <option value="hermes">Hermes</option>
+                <option value="openclaw">OpenClaw</option>
               </select>
             </label>
           </div>
           <label className="section">
-            <span className="section-title">Marketplace description</span>
-            <textarea value={draft.templateDescription} onChange={(event) => setDraft({ ...draft, templateDescription: event.target.value })} placeholder="What this Agent does for buyers" />
+            <span className="section-title">{t("Marketplace description")}</span>
+            <textarea value={draft.templateDescription} onChange={(event) => setDraft({ ...draft, templateDescription: event.target.value })} placeholder={t("What this Agent does for buyers")} />
           </label>
           <div className="form-2">
             <label className="section">
-              <span className="section-title">Default model provider</span>
+              <span className="section-title">{t("Default model provider")}</span>
               <select value={draft.templateModelProvider} onChange={(event) => setDraft({ ...draft, templateModelProvider: event.target.value })}>
                 {modelProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
               </select>
             </label>
             <label className="section">
-              <span className="section-title">Default model</span>
+              <span className="section-title">{t("Default model")}</span>
               <input value={draft.templateModel} onChange={(event) => setDraft({ ...draft, templateModel: event.target.value })} />
             </label>
           </div>
           <div className="form-2">
             <label className="section">
-              <span className="section-title">Plan name</span>
+              <span className="section-title">{t("Plan name")}</span>
               <input value={draft.templatePlanName} onChange={(event) => setDraft({ ...draft, templatePlanName: event.target.value })} />
             </label>
             <label className="section">
-              <span className="section-title">Agent price / hour (cents)</span>
+              <span className="section-title">{t("Agent price / hour (cents)")}</span>
               <input type="number" value={draft.templatePricePerHourCents} onChange={(event) => setDraft({ ...draft, templatePricePerHourCents: Number(event.target.value) })} />
             </label>
           </div>
           <div className="form-2">
             <label className="section">
-              <span className="section-title">CPU</span>
+              <span className="section-title">{t("CPU")}</span>
               <input type="number" value={draft.templateCpu} onChange={(event) => setDraft({ ...draft, templateCpu: Number(event.target.value) })} />
             </label>
             <label className="section">
-              <span className="section-title">Memory MB</span>
+              <span className="section-title">{t("Memory MB")}</span>
               <input type="number" value={draft.templateMemoryMb} onChange={(event) => setDraft({ ...draft, templateMemoryMb: Number(event.target.value) })} />
             </label>
           </div>
           <button className="primary" type="submit" disabled={busy || profile?.status !== "approved"}>
-            <PanelTop size={16} /> Publish to marketplace
+            <PanelTop size={16} /> {t("Publish to marketplace")}
           </button>
-          <div className="muted">Active provider Agents appear in the marketplace immediately. Purchases are provisioned on provider nodes and Web Chat is dispatched as node tasks.</div>
+          <div className="muted">{t("Active provider Agents appear in the marketplace immediately. Purchases are provisioned on provider nodes and Web Chat is dispatched as node tasks.")}</div>
         </form>
         <div className="stack list-gap">
           {templates.length === 0 ? <Empty>No provider Agents published yet.</Empty> : null}
@@ -1117,9 +1676,9 @@ function ProviderPage({ api }) {
                 <StatusPill status={template.status} />
               </div>
               <div className="chip-row">
-                <span className="chip">{template.plans?.[0]?.name || "No plan"}</span>
-                <span className="chip">{formatMoney(template.plans?.[0]?.pricePerHourCents || 0)}/h</span>
-                <span className="chip">Web Chat</span>
+                <span className="chip">{template.plans?.[0]?.name || t("No plan")}</span>
+                <span className="chip">{formatHourlyMoney(template.plans?.[0]?.pricePerHourCents || 0, language)}</span>
+                <span className="chip">{t("Web Chat")}</span>
               </div>
             </div>
           ))}
@@ -1136,7 +1695,7 @@ function ProviderPage({ api }) {
         ) : (
           <Empty>After creating a node, copy the install command and run it on the target server.</Empty>
         )}
-        {installToken ? <div className="provider-note">This token is only recoverable from the command shown here. Rotate the token if this browser session is lost.</div> : null}
+        {installToken ? <div className="provider-note">{t("This token is only recoverable from the command shown here. Rotate the token if this browser session is lost.")}</div> : null}
       </Panel>
 
       <Panel title="Nodes" subtitle="Registration, heartbeat, and approval visibility" icon={<Server size={16} />}>
@@ -1148,7 +1707,7 @@ function ProviderPage({ api }) {
                 <div>
                   <strong>{node.name}</strong>
                   <div className="muted">
-                    {node.region} · {node.providerStatus || "unknown"} · {node.dockerStatus || "unknown"}
+                    {node.region} · {translateStatus(node.providerStatus || "unknown", language)} · {translateStatus(node.dockerStatus || "unknown", language)}
                   </div>
                 </div>
                 <StatusPill status={node.status} />
@@ -1157,13 +1716,13 @@ function ProviderPage({ api }) {
                 <span className="chip">{node.totalCpu} CPU</span>
                 <span className="chip">{node.totalMemoryMb} MB</span>
                 <span className="chip">{node.totalDiskGb} GB</span>
-                <span className="chip">{node.agentVersion || "no agent"}</span>
+                <span className="chip">{node.agentVersion || t("no agent")}</span>
               </div>
               <div className="item-row">
-                <span className="muted">Heartbeat {formatTime(node.lastHeartbeatAt)}</span>
+                <span className="muted">{t("Heartbeat")} {formatTime(node.lastHeartbeatAt)}</span>
                 <div className="toolbar">
                   <button type="button" onClick={() => rotateToken(node.id)} disabled={busy}>
-                    <RefreshCw size={16} /> Rotate token
+                    <RefreshCw size={16} /> {t("Rotate token")}
                   </button>
                 </div>
               </div>
@@ -1187,6 +1746,7 @@ function InstancesPage({ api }) {
   const [instances, setInstances] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1195,11 +1755,11 @@ function InstancesPage({ api }) {
       const payload = await api("/api/instances");
       setInstances(payload.instances);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, language]);
 
   useEffect(() => {
     load();
@@ -1214,10 +1774,10 @@ function InstancesPage({ api }) {
         actions={
           <>
             <button type="button" onClick={() => setRoute("market")}>
-              <Zap size={16} /> New instance
+              <Zap size={16} /> {t("New instance")}
             </button>
             <button type="button" onClick={load}>
-              <RefreshCw size={16} /> Refresh
+              <RefreshCw size={16} /> {t("Refresh")}
             </button>
           </>
         }
@@ -1233,7 +1793,7 @@ function InstancesPage({ api }) {
               title="No instances yet"
               action={
                 <button type="button" onClick={() => setRoute("market")}>
-                  <Zap size={16} /> Open marketplace
+                  <Zap size={16} /> {t("Open marketplace")}
                 </button>
               }
             >
@@ -1276,6 +1836,7 @@ function InstanceConsole({ api, token, id }) {
   const [tab, setTab] = useState("overview");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1288,11 +1849,11 @@ function InstanceConsole({ api, token, id }) {
       setInstance(instancePayload.instance);
       setSetup(setupPayload.setup);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setLoading(false);
     }
-  }, [api, id]);
+  }, [api, id, language]);
 
   useEffect(() => {
     load();
@@ -1305,7 +1866,7 @@ function InstanceConsole({ api, token, id }) {
       const payload = await api(`/api/instances/${instance.id}/${action}`, { method: "POST" });
       setInstance(payload.instance);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     }
   }
 
@@ -1332,7 +1893,7 @@ function InstanceConsole({ api, token, id }) {
           <>
             <StatusPill status={instance.status} />
             <button type="button" onClick={load}>
-              <RefreshCw size={16} /> Refresh
+              <RefreshCw size={16} /> {t("Refresh")}
             </button>
           </>
         }
@@ -1345,7 +1906,7 @@ function InstanceConsole({ api, token, id }) {
         <div className="tabbar">
           {tabs.map((item) => (
             <button type="button" key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
-              {item.icon} {item.label}
+              {item.icon} {t(item.label)}
             </button>
           ))}
         </div>
@@ -1362,18 +1923,20 @@ function InstanceConsole({ api, token, id }) {
               note:
                 step.key === "configure_model"
                   ? setup.model
-                    ? `${setup.model.provider}/${setup.model.model} · ${setup.model.credentialPreview}`
+                    ? `${setup.model.provider}/${setup.model.model} · ${t(formatSecretPreview(setup.model.credentialPreview))}`
                     : "Pick a provider and save the API key"
                   : step.key === "enable_channel"
                     ? setup.channels.find((channel) => channel.type === "web_chat")?.status === "active"
                       ? "Web Chat is active"
                       : "Enable Web Chat first"
                       : step.key === "enable_skills"
-                        ? step.note || `${setup.skills.filter((skill) => skill.status === "enabled").length} enabled`
+                        ? step.note === "no required skills"
+                          ? step.note
+                          : translateSetupNote(step.note, language)
                       : step.key === "test_chat"
-                        ? `${setup.recentChatCount} messages`
+                        ? formatMessagesCount(setup.recentChatCount, language)
                         : step.key === "terminal_logs"
-                          ? `${setup.recentLogCount} log entries`
+                          ? formatLogEntriesCount(setup.recentLogCount, language)
                           : instance.templateName
             }))}
           />
@@ -1398,6 +1961,7 @@ function InstanceConsole({ api, token, id }) {
 function OverviewTab({ instance, api, onUpdate, onLifecycle, setup }) {
   const [healthBusy, setHealthBusy] = useState(false);
   const nextStepIndex = (setup?.steps || []).findIndex((item) => !item.done);
+  const { language, t } = useI18n();
 
   async function healthCheck() {
     setHealthBusy(true);
@@ -1418,22 +1982,22 @@ function OverviewTab({ instance, api, onUpdate, onLifecycle, setup }) {
         actions={
           <>
             <button type="button" onClick={() => onLifecycle("start")} disabled={instance.status === "running" || instance.status === "destroyed"}>
-              <Play size={16} /> Start
+              <Play size={16} /> {t("Start")}
             </button>
             <button type="button" onClick={() => onLifecycle("stop")} disabled={instance.status !== "running"}>
-              <Square size={16} /> Stop
+              <Square size={16} /> {t("Stop")}
             </button>
             <button type="button" onClick={() => onLifecycle("restart")} disabled={instance.status === "destroyed"}>
-              <ListRestart size={16} /> Restart
+              <ListRestart size={16} /> {t("Restart")}
             </button>
           </>
         }
       >
         <div className="grid-3">
           <Metric label="Status" value={<StatusPill status={instance.status} />} note={instance.errorReason || "runtime state"} icon={<Activity size={15} />} tone={instance.status === "running" ? "success" : "neutral"} />
-          <Metric label="Plan" value={instance.planName} note={`${instance.cpu} CPU · ${instance.memoryMb} MB · ${instance.diskGb} GB`} icon={<Cpu size={15} />} />
-          <Metric label="Estimate" value={formatMoney(instance.usage?.estimatedCents || 0)} note={`${formatHours(instance.usage?.runtimeHours || 0)} runtime`} icon={<Coins size={15} />} tone="warning" />
-          <Metric label="Node" value={instance.nodeName} note={`${instance.region} · ${instance.nodeStatus}`} icon={<Server size={15} />} />
+          <Metric label="Plan" value={<>{instance.planName}</>} note={`${instance.cpu} CPU · ${instance.memoryMb} MB · ${instance.diskGb} GB`} icon={<Cpu size={15} />} />
+          <Metric label="Estimate" value={formatMoney(instance.usage?.estimatedCents || 0)} note={formatHours(instance.usage?.runtimeHours || 0)} icon={<Coins size={15} />} tone="warning" />
+          <Metric label="Node" value={<>{instance.nodeName}</>} note={`${instance.region} · ${translateStatus(instance.nodeStatus, language)}`} icon={<Server size={15} />} />
           <Metric
             label="Runtime"
             value={instance.nodeType === "provider" ? "Provider node" : "Local sandbox"}
@@ -1449,28 +2013,28 @@ function OverviewTab({ instance, api, onUpdate, onLifecycle, setup }) {
         icon={<Activity size={16} />}
         actions={
             <button type="button" onClick={healthCheck} disabled={healthBusy}>
-              <Check size={16} /> Health check
+              <Check size={16} /> {t("Health check")}
             </button>
         }
       >
         <div className="stack">
           <div className="item health-card">
             <div className="item-row">
-              <strong>{instance.nodeType === "provider" ? "Provider node" : "Local sandbox"}</strong>
-              <Pill tone={instance.nodeStatus === "offline" ? "danger" : "success"}>{instance.nodeStatus || instance.status}</Pill>
+              <strong>{instance.nodeType === "provider" ? t("Provider node") : t("Local sandbox")}</strong>
+              <Pill tone={instance.nodeStatus === "offline" ? "danger" : "success"}>{translateStatus(instance.nodeStatus || instance.status, language)}</Pill>
             </div>
             <div className="muted">
-              {instance.nodeType === "provider"
+              {t(instance.nodeType === "provider"
                 ? "This Agent runs on the provider's registered node. Provisioning, lifecycle actions, and Web Chat are dispatched through node tasks; user-visible replies come from the provider runtime command."
-                : "This environment does not have Docker. The Phase 1 MVP uses isolated workspaces to simulate a Linux agent sandbox and keeps the Docker runtime adapter boundary intact."}
+                : "This environment does not have Docker. The Phase 1 MVP uses isolated workspaces to simulate a Linux agent sandbox and keeps the Docker runtime adapter boundary intact.")}
             </div>
           </div>
           <div className="item health-card">
             <div className="item-row">
-              <strong>Billing mode</strong>
-              <Pill tone="success">Estimate</Pill>
+              <strong>{t("Billing mode")}</strong>
+              <Pill tone="success">{t("Estimate")}</Pill>
             </div>
-            <div className="muted">Internal billing is estimated from runtime and chat tokens. No payment provider is connected.</div>
+            <div className="muted">{t("Internal billing is estimated from runtime and chat tokens. No payment provider is connected.")}</div>
           </div>
         </div>
       </Panel>
@@ -1479,7 +2043,7 @@ function OverviewTab({ instance, api, onUpdate, onLifecycle, setup }) {
           {(setup?.steps || []).map((step, index) => (
             <div className="item" key={step.key}>
               <div className="item-row">
-                <strong>{index + 1}. {step.label}</strong>
+                <strong>{index + 1}. {t(step.label)}</strong>
                 <StatusPill status={step.done ? "running" : index === nextStepIndex ? "pending" : "draft"} />
               </div>
               <div className="muted">
@@ -1490,14 +2054,14 @@ function OverviewTab({ instance, api, onUpdate, onLifecycle, setup }) {
                     : step.key === "configure_model"
                       ? setup?.model
                         ? `${setup.model.provider}/${setup.model.model}`
-                        : "Set the provider and API key in Models"
+                        : t("Set the provider and API key in Models")
                       : step.key === "enable_channel"
-                        ? "Turn on Web Chat in Channels"
+                        ? t("Turn on Web Chat in Channels")
                       : step.key === "enable_skills"
-                        ? "Install and enable the skills this template expects"
+                        ? t("Install and enable the skills this template expects")
                       : step.key === "test_chat"
-                            ? "Send one chat message to verify model and channel"
-                            : "Open Terminal and Logs to confirm runtime health"}
+                            ? t("Send one chat message to verify model and channel")
+                            : t("Open Terminal and Logs to confirm runtime health")}
               </div>
             </div>
           ))}
@@ -1515,6 +2079,7 @@ function ModelsTab({ api, instance }) {
   const [clearApiKey, setClearApiKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
 
   const load = useCallback(async () => {
     const payload = await api(`/api/instances/${instance.id}/model`);
@@ -1526,7 +2091,7 @@ function ModelsTab({ api, instance }) {
   }, [api, instance.id]);
 
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    load().catch((err) => setError(translateErrorMessage(err.message, language)));
   }, [load]);
 
   async function save(event) {
@@ -1542,7 +2107,7 @@ function ModelsTab({ api, instance }) {
       setApiKey("");
       setClearApiKey(false);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setSaving(false);
     }
@@ -1554,7 +2119,7 @@ function ModelsTab({ api, instance }) {
         {error ? <Pill tone="danger">{error}</Pill> : null}
         <div className="form-2">
           <label className="section">
-            <span className="section-title">Provider</span>
+            <span className="section-title">{t("Provider")}</span>
             <select value={provider} onChange={(event) => setProvider(event.target.value)}>
               {modelProviders.map((item) => (
                 <option key={item} value={item}>{item}</option>
@@ -1562,17 +2127,17 @@ function ModelsTab({ api, instance }) {
             </select>
           </label>
           <label className="section">
-            <span className="section-title">Model</span>
+            <span className="section-title">{t("Model")}</span>
             <input value={model} onChange={(event) => setModel(event.target.value)} />
           </label>
         </div>
         <label className="section">
-          <span className="section-title">User API key</span>
+          <span className="section-title">{t("User API key")}</span>
           <input
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
             type="password"
-            placeholder={formatSecretPreview(modelConfig?.credentialPreview)}
+            placeholder={t(formatSecretPreview(modelConfig?.credentialPreview))}
           />
         </label>
         <label className="inline-check">
@@ -1581,14 +2146,14 @@ function ModelsTab({ api, instance }) {
             checked={clearApiKey}
             onChange={(event) => setClearApiKey(event.target.checked)}
           />
-          <span>Clear saved API key</span>
+          <span>{t("Clear saved API key")}</span>
         </label>
         <div className="toolbar">
           <button className="primary" type="submit" disabled={saving}>
-            <Check size={16} /> Save default model
+            <Check size={16} /> {t("Save default model")}
           </button>
           <Pill tone={hasSavedSecret(modelConfig?.credentialPreview) ? "success" : "neutral"}>
-            Secret: {formatSecretPreview(modelConfig?.credentialPreview)}
+            {t("Secret")}: {t(formatSecretPreview(modelConfig?.credentialPreview))}
           </Pill>
         </div>
       </form>
@@ -1604,6 +2169,7 @@ function ChannelsTab({ api, instance }) {
   const [sending, setSending] = useState(false);
   const [queuedTaskId, setQueuedTaskId] = useState("");
   const [chatStatus, setChatStatus] = useState("");
+  const { language, t } = useI18n();
 
   const load = useCallback(async () => {
     const [channelsPayload, chatPayload] = await Promise.all([
@@ -1615,7 +2181,7 @@ function ChannelsTab({ api, instance }) {
   }, [api, instance.id]);
 
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    load().catch((err) => setError(translateErrorMessage(err.message, language)));
   }, [load]);
 
   async function updateChannel(type, status) {
@@ -1627,7 +2193,7 @@ function ChannelsTab({ api, instance }) {
       });
       setChannels(payload.channels);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     }
   }
 
@@ -1675,7 +2241,7 @@ function ChannelsTab({ api, instance }) {
         setChatStatus("");
       }
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     } finally {
       setSending(false);
     }
@@ -1689,22 +2255,22 @@ function ChannelsTab({ api, instance }) {
           {channels.map((channel) => (
             <div className="item" key={channel.type}>
               <div className="item-row">
-                <strong>{channelLabels[channel.type] || channel.type}</strong>
+                <strong>{translate(language, channelLabels[channel.type] || channel.type)}</strong>
                 <StatusPill status={channel.status} />
               </div>
               <div className="muted">
-                {channel.type === "web_chat"
+                {t(channel.type === "web_chat"
                   ? "Console chat is available for this workspace."
-                  : "Phase 1 keeps the adapter shape here; real external channel access comes later."}
+                  : "Phase 1 keeps the adapter shape here; real external channel access comes later.")}
               </div>
               <div className="toolbar">
                 <button type="button" onClick={() => updateChannel(channel.type, "active")} disabled={channel.type !== "web_chat" && channel.status === "waitlist"}>
-                  <Check size={16} /> Enable
+                  <Check size={16} /> {t("Enable")}
                 </button>
                 <button type="button" onClick={() => updateChannel(channel.type, "disabled")}>
-                  <Square size={16} /> Disable
+                  <Square size={16} /> {t("Disable")}
                 </button>
-                {channel.type !== "web_chat" ? <Pill tone="warning">Preview placeholder</Pill> : null}
+                {channel.type !== "web_chat" ? <Pill tone="warning">{t("Preview placeholder")}</Pill> : null}
               </div>
             </div>
           ))}
@@ -1714,7 +2280,7 @@ function ChannelsTab({ api, instance }) {
         <div className="chat-window">
           {chatStatus ? (
             <div className="provider-note">
-              {chatStatus}{queuedTaskId ? ` Task: ${queuedTaskId}` : ""}
+              {t(chatStatus)}{queuedTaskId ? ` ${t("Task")}: ${queuedTaskId}` : ""}
             </div>
           ) : null}
           <div className="chat-log">
@@ -1722,7 +2288,7 @@ function ChannelsTab({ api, instance }) {
             {chatMessages.map((item, index) => (
               <div className={`chat-bubble ${item.role}`} key={item.id || index}>
                 <div className="log-meta">
-                  <strong>{item.role}</strong>
+                  <strong>{t(item.role)}</strong>
                   <span>{formatTime(item.createdAt)}</span>
                 </div>
                 <pre className="code-block">{item.content}</pre>
@@ -1730,9 +2296,9 @@ function ChannelsTab({ api, instance }) {
             ))}
           </div>
           <form className="chat-form" onSubmit={sendMessage}>
-            <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Type a message" />
+            <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder={t("Type a message")} />
             <button className="primary" type="submit" disabled={sending || instance.status !== "running"}>
-              <MessageSquare size={16} /> Send
+              <MessageSquare size={16} /> {t("Send")}
             </button>
           </form>
         </div>
@@ -1744,6 +2310,7 @@ function ChannelsTab({ api, instance }) {
 function SkillsTab({ api, instance }) {
   const [skills, setSkills] = useState([]);
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
 
   const load = useCallback(async () => {
     const payload = await api(`/api/instances/${instance.id}/skills`);
@@ -1751,22 +2318,34 @@ function SkillsTab({ api, instance }) {
   }, [api, instance.id]);
 
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    load().catch((err) => setError(translateErrorMessage(err.message, language)));
   }, [load]);
 
   async function install(skill) {
-    await api(`/api/instances/${instance.id}/skills/${skill.id}/install`, { method: "POST" });
-    await load();
+    try {
+      await api(`/api/instances/${instance.id}/skills/${skill.id}/install`, { method: "POST" });
+      await load();
+    } catch (err) {
+      setError(translateErrorMessage(err.message, language));
+    }
   }
 
   async function setStatus(skill, status) {
-    await api(`/api/instances/${instance.id}/skills/${skill.id}`, { method: "PATCH", body: { status } });
-    await load();
+    try {
+      await api(`/api/instances/${instance.id}/skills/${skill.id}`, { method: "PATCH", body: { status } });
+      await load();
+    } catch (err) {
+      setError(translateErrorMessage(err.message, language));
+    }
   }
 
   async function uninstall(skill) {
-    await api(`/api/instances/${instance.id}/skills/${skill.id}`, { method: "DELETE" });
-    await load();
+    try {
+      await api(`/api/instances/${instance.id}/skills/${skill.id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      setError(translateErrorMessage(err.message, language));
+    }
   }
 
   return (
@@ -1791,16 +2370,16 @@ function SkillsTab({ api, instance }) {
             <div className="toolbar">
               {!skill.installed ? (
                 <button type="button" onClick={() => install(skill)}>
-                  <Zap size={16} /> Install
+                  <Zap size={16} /> {t("Install")}
                 </button>
               ) : (
                 <>
                   <button type="button" onClick={() => setStatus(skill, skill.status === "enabled" ? "disabled" : "enabled")}>
                     {skill.status === "enabled" ? <Square size={16} /> : <Check size={16} />}
-                    {skill.status === "enabled" ? "Disable" : "Enable"}
+                    {skill.status === "enabled" ? t("Disable") : t("Enable")}
                   </button>
                   <button type="button" onClick={() => uninstall(skill)}>
-                    <Trash2 size={16} /> Uninstall
+                    <Trash2 size={16} /> {t("Uninstall")}
                   </button>
                 </>
               )}
@@ -1816,6 +2395,7 @@ function TerminalTab({ token, instance }) {
   const hostRef = useRef(null);
   const [status, setStatus] = useState("disconnected");
   const [reloadKey, setReloadKey] = useState(0);
+  const { language } = useI18n();
 
   const connect = useCallback(() => {
     if (!hostRef.current || !token || !instance?.id) return;
@@ -1856,7 +2436,7 @@ function TerminalTab({ token, instance }) {
             <span className="terminal-status">{instance.workspacePath}</span>
           </div>
           <div className="toolbar">
-            <Pill tone={status === "connected" ? "success" : status === "error" ? "danger" : "warning"}>{status}</Pill>
+            <Pill tone={status === "connected" ? "success" : status === "error" ? "danger" : "warning"}>{translateStatus(status, language)}</Pill>
             <IconButton title="Reconnect" onClick={() => setReloadKey((value) => value + 1)}>
               <RefreshCw size={16} />
             </IconButton>
@@ -1871,6 +2451,7 @@ function TerminalTab({ token, instance }) {
 function LogsTab({ api, instance }) {
   const [payload, setPayload] = useState({ logs: [], audits: [] });
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
 
   const load = useCallback(async () => {
     const next = await api(`/api/instances/${instance.id}/logs`);
@@ -1878,7 +2459,7 @@ function LogsTab({ api, instance }) {
   }, [api, instance.id]);
 
   useEffect(() => {
-    load().catch((err) => setError(err.message));
+    load().catch((err) => setError(translateErrorMessage(err.message, language)));
   }, [load]);
 
   return (
@@ -1887,7 +2468,7 @@ function LogsTab({ api, instance }) {
         title="Agent Logs"
         subtitle="Agent, runtime, deployment, and health-check logs"
         icon={<FileText size={16} />}
-        actions={<button type="button" onClick={load}><RefreshCw size={16} /> Refresh</button>}
+        actions={<button type="button" onClick={load}><RefreshCw size={16} /> {t("Refresh")}</button>}
       >
         <div className="log-list">
           {error ? <Pill tone="danger">{error}</Pill> : null}
@@ -1911,7 +2492,7 @@ function LogsTab({ api, instance }) {
             <div className="log-item" key={audit.id}>
               <div className="log-meta">
                 <strong>{audit.action}</strong>
-                <span>{audit.actorEmail || "system"}</span>
+                <span>{audit.actorEmail || t("system")}</span>
                 <span>{formatTime(audit.createdAt)}</span>
               </div>
               <pre className="code-block">{JSON.stringify(audit.metadata, null, 2)}</pre>
@@ -1927,6 +2508,7 @@ function SettingsTab({ api, instance, onUpdate, onLifecycle }) {
   const [name, setName] = useState(instance.name);
   const [usage, setUsage] = useState(null);
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
 
   const loadUsage = useCallback(async () => {
     const payload = await api(`/api/instances/${instance.id}/usage`);
@@ -1934,7 +2516,7 @@ function SettingsTab({ api, instance, onUpdate, onLifecycle }) {
   }, [api, instance.id]);
 
   useEffect(() => {
-    loadUsage().catch((err) => setError(err.message));
+    loadUsage().catch((err) => setError(translateErrorMessage(err.message, language)));
   }, [loadUsage]);
 
   async function saveName(event) {
@@ -1947,7 +2529,7 @@ function SettingsTab({ api, instance, onUpdate, onLifecycle }) {
       });
       onUpdate(payload.instance);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     }
   }
 
@@ -1957,21 +2539,21 @@ function SettingsTab({ api, instance, onUpdate, onLifecycle }) {
         <form className="stack" onSubmit={saveName}>
           {error ? <Pill tone="danger">{error}</Pill> : null}
           <label className="section">
-            <span className="section-title">Instance name</span>
+            <span className="section-title">{t("Instance name")}</span>
             <input value={name} onChange={(event) => setName(event.target.value)} />
           </label>
           <div className="toolbar">
             <button className="primary" type="submit">
-              <Check size={16} /> Save
+              <Check size={16} /> {t("Save")}
             </button>
             <button type="button" onClick={() => onLifecycle("restart")} disabled={instance.status === "destroyed"}>
-              <ListRestart size={16} /> Restart
+              <ListRestart size={16} /> {t("Restart")}
             </button>
             <button type="button" onClick={() => onLifecycle("stop")} disabled={instance.status !== "running"}>
-              <Square size={16} /> Stop
+              <Square size={16} /> {t("Stop")}
             </button>
             <button type="button" className="danger" onClick={() => onLifecycle("destroy")} disabled={instance.status === "destroyed"}>
-              <Trash2 size={16} /> Destroy
+              <Trash2 size={16} /> {t("Destroy")}
             </button>
           </div>
         </form>
@@ -1980,7 +2562,7 @@ function SettingsTab({ api, instance, onUpdate, onLifecycle }) {
         title="Usage"
         subtitle="Runtime, tokens, and estimated cost"
         icon={<Database size={16} />}
-        actions={<button type="button" onClick={loadUsage}><RefreshCw size={16} /> Refresh</button>}
+        actions={<button type="button" onClick={loadUsage}><RefreshCw size={16} /> {t("Refresh")}</button>}
       >
         <div className="stack">
           <div className="grid-3">
@@ -1992,23 +2574,23 @@ function SettingsTab({ api, instance, onUpdate, onLifecycle }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Type</th>
-                  <th>Quantity</th>
-                  <th>Estimate</th>
-                  <th>Time</th>
+                  <th>{t("Type")}</th>
+                  <th>{t("Quantity")}</th>
+                  <th>{t("Estimate")}</th>
+                  <th>{t("Time")}</th>
                 </tr>
               </thead>
               <tbody>
                 {(usage?.records || []).map((record) => (
                   <tr key={record.id}>
-                    <td>{record.type}</td>
-                    <td>{Number(record.quantity).toFixed(record.type === "token" ? 0 : 4)} {record.unit}</td>
+                    <td>{translateStatus(record.type, language)}</td>
+                    <td>{Number(record.quantity).toFixed(record.type === "token" ? 0 : 4)} {translateStatus(record.unit, language)}</td>
                     <td>{formatMoney(record.priceEstimateCents)}</td>
                     <td>{formatTime(record.createdAt)}</td>
                   </tr>
                 ))}
                 {(usage?.records || []).length === 0 ? (
-                  <tr><td colSpan="4" className="muted">No usage records yet. Running instances show live estimates.</td></tr>
+                  <tr><td colSpan="4" className="muted">{t("No usage records yet. Running instances show live estimates.")}</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -2025,6 +2607,7 @@ function AdminPage({ api }) {
   const [templates, setTemplates] = useState([]);
   const [providers, setProviders] = useState([]);
   const [error, setError] = useState("");
+  const { language, t } = useI18n();
   const [draft, setDraft] = useState({
     name: "",
     framework: "custom",
@@ -2047,9 +2630,9 @@ function AdminPage({ api }) {
       setTemplates(templatesPayload.templates);
       setProviders(providersPayload.providers);
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     }
-  }, [api]);
+  }, [api, language]);
 
   useEffect(() => {
     load();
@@ -2063,24 +2646,32 @@ function AdminPage({ api }) {
       setDraft({ name: "", framework: "custom", description: "", status: "draft", basePriceCents: 20 });
       await load();
     } catch (err) {
-      setError(err.message);
+      setError(translateErrorMessage(err.message, language));
     }
   }
 
   async function updateTemplate(template, status) {
-    await api(`/api/admin/templates/${template.id}`, {
-      method: "PATCH",
-      body: { status }
-    });
-    await load();
+    try {
+      await api(`/api/admin/templates/${template.id}`, {
+        method: "PATCH",
+        body: { status }
+      });
+      await load();
+    } catch (err) {
+      setError(translateErrorMessage(err.message, language));
+    }
   }
 
   async function updateProvider(provider, status) {
-    await api(`/api/admin/providers/${provider.id}`, {
-      method: "PATCH",
-      body: { status }
-    });
-    await load();
+    try {
+      await api(`/api/admin/providers/${provider.id}`, {
+        method: "PATCH",
+        body: { status }
+      });
+      await load();
+    } catch (err) {
+      setError(translateErrorMessage(err.message, language));
+    }
   }
 
   return (
@@ -2089,14 +2680,14 @@ function AdminPage({ api }) {
         eyebrow="Admin"
         title="Admin console"
         subtitle="Review nodes, templates, providers, instances, usage, and recent errors."
-        actions={<button type="button" onClick={load}><RefreshCw size={16} /> Refresh</button>}
+        actions={<button type="button" onClick={load}><RefreshCw size={16} /> {t("Refresh")}</button>}
       />
 
       <Panel title="Platform summary" subtitle="Counts for users, instances, and templates" icon={<Shield size={16} />}>
         {error ? <Pill tone="danger">{error}</Pill> : null}
         <div className="grid-3">
           <Metric label="Users" value={overview?.counts?.users ?? "—"} icon={<Shield size={15} />} />
-          <Metric label="Instances" value={overview?.counts?.instances ?? "—"} note={`${overview?.counts?.runningInstances ?? 0} running`} icon={<Boxes size={15} />} tone="success" />
+          <Metric label="Instances" value={overview?.counts?.instances ?? "—"} note={`${overview?.counts?.runningInstances ?? 0} ${t("running")}`} icon={<Boxes size={15} />} tone="success" />
           <Metric label="Templates" value={overview?.counts?.templates ?? "—"} icon={<Bot size={15} />} />
         </div>
       </Panel>
@@ -2107,23 +2698,23 @@ function AdminPage({ api }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Node</th>
-                  <th>Type</th>
-                  <th>Region</th>
-                  <th>Status</th>
-                  <th>Provider</th>
-                  <th>Resources</th>
-                  <th>Heartbeat</th>
+                  <th>{t("Node")}</th>
+                  <th>{t("Type")}</th>
+                  <th>{t("Region")}</th>
+                  <th>{t("Status")}</th>
+                  <th>{t("Provider")}</th>
+                  <th>{t("Resources")}</th>
+                  <th>{t("Heartbeat")}</th>
                 </tr>
               </thead>
               <tbody>
                 {(overview?.nodes || []).map((node) => (
                   <tr key={node.id}>
                     <td>{node.name}</td>
-                    <td>{node.type}</td>
+                    <td>{translateStatus(node.type, language)}</td>
                     <td>{node.region}</td>
                     <td><StatusPill status={node.status} /></td>
-                    <td>{node.provider_display_name ? `${node.provider_display_name} / ${node.provider_status}` : "official"}</td>
+                    <td>{node.provider_display_name ? `${node.provider_display_name} / ${translateStatus(node.provider_status, language)}` : t("official")}</td>
                     <td>{node.available_cpu}/{node.total_cpu} CPU · {node.available_memory_mb}/{node.total_memory_mb} MB</td>
                     <td>{formatTime(node.last_heartbeat_at)}</td>
                   </tr>
@@ -2163,20 +2754,20 @@ function AdminPage({ api }) {
                 <StatusPill status={provider.status} />
               </div>
               <div className="chip-row">
-                <span className="chip">{provider.nodeCount} nodes</span>
-                <span className="chip">{provider.healthyNodeCount} healthy</span>
+                <span className="chip">{isChinese(language) ? `${provider.nodeCount} 个节点` : `${provider.nodeCount} nodes`}</span>
+                <span className="chip">{formatHealthyNodes(provider.healthyNodeCount, language)}</span>
                 <span className="chip">{formatMoney(provider.providerCents || 0)}</span>
               </div>
-              <div className="muted">{provider.payoutNote || "No payout note provided"}</div>
+              <div className="muted">{provider.payoutNote || t("No payout note provided")}</div>
               <div className="toolbar">
                 <button type="button" onClick={() => updateProvider(provider, "approved")}>
-                  <Check size={16} /> Approve
+                  <Check size={16} /> {t("Approve")}
                 </button>
                 <button type="button" onClick={() => updateProvider(provider, "rejected")}>
-                  <Square size={16} /> Reject
+                  <Square size={16} /> {t("Reject")}
                 </button>
                 <button type="button" onClick={() => updateProvider(provider, "suspended")}>
-                  <Trash2 size={16} /> Suspend
+                  <Trash2 size={16} /> {t("Suspend")}
                 </button>
               </div>
             </div>
@@ -2188,28 +2779,31 @@ function AdminPage({ api }) {
         <Panel title="Template management" subtitle="Create, publish, and archive official templates" icon={<Bot size={16} />}>
           <form className="stack" onSubmit={createTemplate}>
             <div className="form-2">
-              <input placeholder="Template name" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+              <input placeholder={t("Template name")} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
               <select value={draft.framework} onChange={(event) => setDraft({ ...draft, framework: event.target.value })}>
                 <option value="hermes">Hermes</option>
                 <option value="openclaw">OpenClaw</option>
-                <option value="custom">Custom</option>
+                <option value="custom">{t("Custom")}</option>
               </select>
             </div>
-            <textarea placeholder="Template description" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
+            <textarea placeholder={t("Template description")} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
             <div className="form-2">
               <select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>
-                <option value="draft">draft</option>
-                <option value="active">active</option>
-                <option value="archived">archived</option>
+                <option value="draft">{t("draft")}</option>
+                <option value="active">{t("active")}</option>
+                <option value="archived">{t("archived")}</option>
               </select>
-              <input
-                type="number"
-                value={draft.basePriceCents}
-                onChange={(event) => setDraft({ ...draft, basePriceCents: Number(event.target.value) })}
-              />
+              <label className="section">
+                <span className="section-title">{t("Base price / hour (cents)")}</span>
+                <input
+                  type="number"
+                  value={draft.basePriceCents}
+                  onChange={(event) => setDraft({ ...draft, basePriceCents: Number(event.target.value) })}
+                />
+              </label>
             </div>
             <button className="primary" type="submit">
-              <Zap size={16} /> Create template
+              <Zap size={16} /> {t("Create template")}
             </button>
           </form>
           <div className="template-list admin-template-list">
@@ -2219,11 +2813,11 @@ function AdminPage({ api }) {
                   <strong>{template.name}</strong>
                   <StatusPill status={template.status} />
                 </div>
-                <div className="muted">{template.framework} · From {formatMoney(template.basePriceCents)}/h</div>
+                <div className="muted">{template.framework} · {t("From")} {formatHourlyMoney(template.basePriceCents, language)}</div>
                 <div className="toolbar">
-                  <button type="button" onClick={() => updateTemplate(template, "active")}>Publish</button>
-                  <button type="button" onClick={() => updateTemplate(template, "draft")}>Draft</button>
-                  <button type="button" onClick={() => updateTemplate(template, "archived")}>Archive</button>
+                  <button type="button" onClick={() => updateTemplate(template, "active")}>{t("Publish")}</button>
+                  <button type="button" onClick={() => updateTemplate(template, "draft")}>{t("Draft")}</button>
+                  <button type="button" onClick={() => updateTemplate(template, "archived")}>{t("Archive")}</button>
                 </div>
               </div>
             ))}
@@ -2235,11 +2829,11 @@ function AdminPage({ api }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Instance</th>
-                  <th>User</th>
-                  <th>Status</th>
-                  <th>Node</th>
-                  <th>Estimate</th>
+                  <th>{t("Instance")}</th>
+                  <th>{t("User")}</th>
+                  <th>{t("Status")}</th>
+                  <th>{t("Node")}</th>
+                  <th>{t("Estimate")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -2256,12 +2850,183 @@ function AdminPage({ api }) {
                     <td>{formatMoney(instance.usage?.estimatedCents || 0)}</td>
                   </tr>
                 ))}
-                {instances.length === 0 ? <tr><td colSpan="5" className="muted">No instances yet</td></tr> : null}
+                {instances.length === 0 ? <tr><td colSpan="5" className="muted">{t("No instances yet")}</td></tr> : null}
               </tbody>
             </table>
           </div>
         </Panel>
       </div>
+    </div>
+  );
+}
+
+function AgentMarketPage({ api }) {
+  const [listings, setListings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [renting, setRenting] = useState(null);
+  const [apiKey, setApiKey] = useState("");
+  const { t } = useI18n();
+
+  useEffect(() => {
+    api("/api/listings").then(d => setListings(d.listings || [])).finally(() => setLoading(false));
+  }, [api]);
+
+  async function rent(listing) {
+    setRenting(listing.id);
+    try {
+      const { grant } = await api("/api/grants", { method: "POST", body: { listingId: listing.id, apiKey: apiKey || undefined } });
+      const { session } = await api("/api/sessions", { method: "POST", body: { grantId: grant.id } });
+      setRoute(`session/${session.id}`);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setRenting(null);
+    }
+  }
+
+  if (loading) return <Empty>{t("Loading")}</Empty>;
+
+  return (
+    <div className="page-content">
+      <Panel title={t("Agent Machine Marketplace")} subtitle={t("Browse provider agent machines and rent access sessions")} icon={<Zap size={16} />}>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 12 }}>{t("API Key (BYOK, optional)")}</label>
+          <input className="input" type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-..." style={{ maxWidth: 320 }} />
+        </div>
+        {listings.length === 0 ? (
+          <div className="muted">{t("No active listings available")}</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr>
+                <th>{t("Title")}</th><th>{t("Agent")}</th><th>{t("Access")}</th><th>{t("Provider")}</th><th>{t("Price")}</th><th></th>
+              </tr></thead>
+              <tbody>
+                {listings.map(l => (
+                  <tr key={l.id}>
+                    <td><strong>{l.title}</strong><br/><span className="muted">{l.description}</span></td>
+                    <td><Pill tone="neutral">{l.agent_type}</Pill></td>
+                    <td>{l.access_mode}</td>
+                    <td>{l.provider_name}</td>
+                    <td>{l.price_per_hour_cents ? formatMoney(l.price_per_hour_cents) + "/h" : t("Free")}</td>
+                    <td><button className="btn btn-sm" disabled={renting === l.id} onClick={() => rent(l)}>{renting === l.id ? "..." : t("Rent")}</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function AgentSessionPage({ api, token, id }) {
+  const [session, setSession] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const { t } = useI18n();
+
+  const load = useCallback(async () => {
+    const { session: s } = await api(`/api/sessions/${id}`);
+    setSession(s);
+    const { messages: m } = await api(`/api/sessions/${id}/messages`);
+    setMessages(m || []);
+    try {
+      const { logs: l } = await api(`/api/sessions/${id}/logs`);
+      setLogs(l || []);
+    } catch {}
+  }, [api, id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function send(e) {
+    e.preventDefault();
+    if (!input.trim()) return;
+    setSending(true);
+    try {
+      const { message } = await api(`/api/sessions/${id}/chat`, { method: "POST", body: { message: input } });
+      setMessages(prev => [...prev, { role: "user", content: input, created_at: new Date().toISOString() }, message]);
+      setInput("");
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function stop() {
+    await api(`/api/sessions/${id}/stop`, { method: "POST" });
+    load();
+  }
+
+  if (!session) return <Empty>{t("Loading")}</Empty>;
+
+  return (
+    <div className="page-content">
+      <Panel title={`${t("Session")}: ${session.id}`} subtitle={`${t("Agent")}: ${session.agent_type} | ${t("Status")}: ${session.status}`} icon={<MessageSquare size={16} />}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <Pill tone={statusTone(session.status)}>{session.status}</Pill>
+          {session.status === "active" && <button className="btn btn-sm" onClick={stop}>{t("Stop")}</button>}
+        </div>
+        <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 12, maxHeight: 400, overflowY: "auto", marginBottom: 12 }}>
+          {messages.length === 0 && <div className="muted">{t("No messages yet")}</div>}
+          {messages.map((m, i) => (
+            <div key={i} style={{ marginBottom: 8 }}>
+              <strong>{m.role}:</strong> <span>{m.content}</span>
+            </div>
+          ))}
+        </div>
+        {session.status === "active" && (
+          <form onSubmit={send} style={{ display: "flex", gap: 8 }}>
+            <input className="input" style={{ flex: 1 }} value={input} onChange={e => setInput(e.target.value)} placeholder={t("Type a message...")} />
+            <button className="btn" type="submit" disabled={sending}>{sending ? "..." : t("Send")}</button>
+          </form>
+        )}
+      </Panel>
+      {logs.length > 0 && (
+        <Panel title={t("Logs")} icon={<FileText size={16} />}>
+          <pre style={{ fontSize: 11, maxHeight: 200, overflow: "auto" }}>{logs.map(l => `[${l.src}] ${l.msg}`).join("")}</pre>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function SessionsPage({ api }) {
+  const [sessions, setSessions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const { t } = useI18n();
+
+  useEffect(() => {
+    api("/api/sessions").then(d => setSessions(d.sessions || [])).finally(() => setLoading(false));
+  }, [api]);
+
+  if (loading) return <Empty>{t("Loading")}</Empty>;
+
+  return (
+    <div className="page-content">
+      <Panel title={t("My Sessions")} subtitle={t("Active access grants and sessions")} icon={<Activity size={16} />}>
+        {sessions.length === 0 ? <div className="muted">{t("No active sessions")}</div> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>{t("Agent")}</th><th>{t("Status")}</th><th>{t("Listing")}</th><th></th></tr></thead>
+              <tbody>
+                {sessions.map(s => (
+                  <tr key={s.id}>
+                    <td>{s.agent_type}</td>
+                    <td><Pill tone={statusTone(s.status)}>{s.status}</Pill></td>
+                    <td>{s.listing_title}</td>
+                    <td><button className="btn btn-sm" onClick={() => setRoute(`session/${s.id}`)}>{t("Open Session")}</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
@@ -2302,7 +3067,10 @@ function App() {
   if (!token || !user || route.page === "auth") return <AuthPage onAuth={handleAuth} />;
 
   let page = null;
-  if (route.page === "instances") page = <InstancesPage api={api} />;
+  if (route.page === "agent-market") page = <AgentMarketPage api={api} />;
+  else if (route.page === "session" && route.id) page = <AgentSessionPage api={api} token={token} id={route.id} />;
+  else if (route.page === "sessions") page = <SessionsPage api={api} />;
+  else if (route.page === "instances") page = <InstancesPage api={api} />;
   else if (route.page === "instance" && route.id) page = <InstanceConsole api={api} token={token} id={route.id} />;
   else if (route.page === "provider") page = <ProviderPage api={api} />;
   else if (route.page === "admin") page = user.role === "admin" ? <AdminPage api={api} /> : <Empty>Admin access required</Empty>;
@@ -2315,4 +3083,8 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  <LanguageProvider>
+    <App />
+  </LanguageProvider>
+);
