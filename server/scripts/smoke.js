@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { app } from "../index.js";
 import { db, fromJson } from "../db.js";
+import { config } from "../config.js";
+import { verifyPassword } from "../security.js";
 
 const stack = app.router?.stack || app._router?.stack || [];
 
@@ -38,9 +40,13 @@ for (const [method, path] of requiredRoutes) {
   assert.equal(hasRoute(method, path), true, `missing route ${method.toUpperCase()} ${path}`);
 }
 
-const users = db.prepare("SELECT email, role FROM users ORDER BY role, email").all();
-assert.ok(users.some((user) => user.email === "demo@openasst.ai" && user.role === "user"), "missing demo user");
-assert.ok(users.some((user) => user.email === "admin@openasst.ai" && user.role === "admin"), "missing admin user");
+const users = db.prepare("SELECT email, password_hash, role FROM users ORDER BY role, email").all();
+const demoUser = users.find((user) => user.email === config.demoEmail.toLowerCase());
+const adminUser = users.find((user) => user.email === config.bootstrapAdminEmail.toLowerCase());
+assert.ok(demoUser && demoUser.role === "user", "missing demo user");
+assert.ok(adminUser && adminUser.role === "admin", "missing admin user");
+assert.equal(verifyPassword(config.demoPassword, demoUser.password_hash), true, "demo password does not match seed config");
+assert.equal(verifyPassword(config.bootstrapAdminPassword, adminUser.password_hash), true, "admin password does not match seed config");
 
 const templates = db.prepare(`
   SELECT id, install_method, runtime_kind, install_command, start_command, health_check, config_hints_json

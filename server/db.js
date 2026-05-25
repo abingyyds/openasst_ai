@@ -399,20 +399,45 @@ export function seedDefaults() {
     throw new Error("BOOTSTRAP_ADMIN_PASSWORD must be set when NODE_ENV=production");
   }
 
-  if (config.seedDemoUser) {
-    const demoHash = bcrypt.hashSync(config.demoPassword, 10);
+  const syncSeedUser = ({ id, email, password, role }) => {
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const passwordHash = bcrypt.hashSync(password, 10);
+    const existingByEmail = db.prepare("SELECT id FROM users WHERE email = ?").get(normalizedEmail);
+
+    if (existingByEmail) {
+      db.prepare("UPDATE users SET password_hash = ?, role = ? WHERE id = ?")
+        .run(passwordHash, role, existingByEmail.id);
+      return;
+    }
+
+    const existingById = db.prepare("SELECT id FROM users WHERE id = ?").get(id);
+    if (existingById) {
+      db.prepare("UPDATE users SET email = ?, password_hash = ?, role = ? WHERE id = ?")
+        .run(normalizedEmail, passwordHash, role, id);
+      return;
+    }
+
     db.prepare(`
-      INSERT OR IGNORE INTO users (id, email, password_hash, role, created_at)
+      INSERT INTO users (id, email, password_hash, role, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run("usr_demo", config.demoEmail, demoHash, "user", stamp);
+    `).run(id, normalizedEmail, passwordHash, role, stamp);
+  };
+
+  if (config.seedDemoUser) {
+    syncSeedUser({
+      id: "usr_demo",
+      email: config.demoEmail,
+      password: config.demoPassword,
+      role: "user"
+    });
   }
 
-  const adminHash = bcrypt.hashSync(config.bootstrapAdminPassword, 10);
-
-  db.prepare(`
-    INSERT OR IGNORE INTO users (id, email, password_hash, role, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run("usr_admin", config.bootstrapAdminEmail, adminHash, "admin", stamp);
+  syncSeedUser({
+    id: "usr_admin",
+    email: config.bootstrapAdminEmail,
+    password: config.bootstrapAdminPassword,
+    role: "admin"
+  });
 
   const templates = [
     {
