@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/
+runtime/workspaces/
+.env
+.DS_Store
+npm-debug.log*
+.codex-*-result.txt
