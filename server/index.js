@@ -27,8 +27,16 @@ import {
   verifyToken
 } from "./security.js";
 import { provisionWorkspace, workspacePathFor } from "./runtime/localSandbox.js";
+import {
+  migrateAgentMachineTables,
+  startAgentProcess,
+  sendMessageToSession,
+  stopAgentSession,
+  getSessionLogs
+} from "./agentMachine.js";
 
 await initDatabase();
+await migrateAgentMachineTables();
 fs.mkdirSync(config.runtimeWorkspaceDir, { recursive: true });
 
 const app = express();
@@ -2532,6 +2540,231 @@ wss.on("connection", (ws, request, { user, instance }) => {
     backgroundWrite(writeInstanceLog(instance.id, "info", "terminal", "终端会话已结束", { userId: user.id }));
   });
 });
+
+// ─── Agent Machine APIs ───────────────────────────────────────────────────────
+
+app.post("/api/machines", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
+  if (!profile || profile.status !== "approved") return sendError(res, 403, "需要已审核的供应商身份");
+  const { name, os, cpu, memoryMb, diskGb, gpu, installedAgents, accessModes } = req.body;
+  if (!name) return sendError(res, 400, "机器名称必填");
+  const id = createId("mach");
+  const stamp = now();
+  await db.run(`
+    INSERT INTO provider_machines (id, provider_profile_id, name, os, cpu, memory_mb, disk_gb, gpu, installed_agents_json, access_modes_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, id, profile.id, name, os || "linux", cpu || 0, memoryMb || 0, diskGb || 0, gpu || null,
+    toJson(installedAgents || []), toJson(accessModes || ["chat"]), stamp, stamp);
+  const machine = await db.get("SELECT * FROM provider_machines WHERE id = ?", id);
+  res.json({ machine });
+});
+
+app.get("/api/machines", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
+  if (!profile) return sendError(res, 403, "需要供应商身份");
+  const machines = await db.all("SELECT * FROM provider_machines WHERE provider_profile_id = ? ORDER BY created_at DESC", profile.id);
+  res.json({ machines });
+});
+
+app.post("/api/machines/:machineId/capability-check", requireAuth, async (req, res) => {
+  const machine = await db.get("SELECT * FROM provider_machines WHERE id = ?", req.params.machineId);
+  if (!machine) return sendError(res, 404, "机器不存在");
+  const profile = await getProviderProfileByUserId(req.user.id);
+  if (!profile || machine.provider_profile_id !== profile.id) return sendError(res, 403, "无权操作");
+  const id = createId("cap");
+  const stamp = now();
+  const result = {
+    os: machine.os,
+    cpu: machine.cpu,
+    memoryMb: machine.memory_mb,
+    diskGb: machine.disk_gb,
+    gpu: machine.gpu,
+    installedAgents: fromJson(machine.installed_agents_json, []),
+    networkOk: true,
+    checkedAt: stamp
+  };
+  await db.run(`
+    INSERT INTO capability_checks (id, machine_id, status, result_json, started_at, completed_at, created_at)
+    VALUES (?, ?, 'passed', ?, ?, ?, ?)
+  `, id, machine.id, toJson(result), stamp, stamp, stamp);
+  await db.run("UPDATE provider_machines SET connector_status = 'verified', updated_at = ? WHERE id = ?", stamp, machine.id);
+  res.json({ check: { id, machineId: machine.id, status: "passed", result } });
+});
+
+app.post("/api/listings", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
+  if (!profile || profile.status !== "approved") return sendError(res, 403, "需要已审核的供应商身份");
+  const { machineId, title, description, agentType, accessMode, isolationMode, concurrencyLimit, pricePerHourCents, billingUnit } = req.body;
+  if (!machineId || !title) return sendError(res, 400, "machineId 和 title 必填");
+  const machine = await db.get("SELECT * FROM provider_machines WHERE id = ? AND provider_profile_id = ?", machineId, profile.id);
+  if (!machine) return sendError(res, 404, "机器不存在或无权操作");
+  const id = createId("lst");
+  const stamp = now();
+  await db.run(`
+    INSERT INTO machine_listings (id, machine_id, provider_profile_id, title, description, agent_type, access_mode, isolation_mode, concurrency_limit, price_per_hour_cents, billing_unit, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+  `, id, machineId, profile.id, title, description || "", agentType || "echo-agent",
+    accessMode || "chat", isolationMode || "trusted", concurrencyLimit || 1,
+    pricePerHourCents || 0, billingUnit || "session", stamp, stamp);
+  const listing = await db.get("SELECT * FROM machine_listings WHERE id = ?", id);
+  res.json({ listing });
+});
+
+app.get("/api/listings", async (req, res) => {
+  const listings = await db.all(`
+    SELECT l.*, m.name AS machine_name, m.os, m.cpu, m.memory_mb, m.disk_gb, m.connector_status,
+           p.display_name AS provider_name
+    FROM machine_listings l
+    JOIN provider_machines m ON m.id = l.machine_id
+    JOIN provider_profiles p ON p.id = l.provider_profile_id
+    WHERE l.status = 'active'
+    ORDER BY l.created_at DESC
+  `);
+  res.json({ listings });
+});
+
+app.get("/api/provider/listings", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
+  if (!profile) return sendError(res, 403, "需要供应商身份");
+  const listings = await db.all(`
+    SELECT l.*, m.name AS machine_name
+    FROM machine_listings l
+    JOIN provider_machines m ON m.id = l.machine_id
+    WHERE l.provider_profile_id = ?
+    ORDER BY l.created_at DESC
+  `, profile.id);
+  res.json({ listings });
+});
+
+app.post("/api/grants", requireAuth, async (req, res) => {
+  const { listingId, apiKey } = req.body;
+  if (!listingId) return sendError(res, 400, "listingId 必填");
+  const listing = await db.get("SELECT * FROM machine_listings WHERE id = ? AND status = 'active'", listingId);
+  if (!listing) return sendError(res, 404, "Listing 不存在或已下架");
+  const activeCount = await db.get("SELECT COUNT(*) AS cnt FROM access_grants WHERE listing_id = ? AND status = 'active'", listingId);
+  if (activeCount.cnt >= listing.concurrency_limit) return sendError(res, 409, "已达并发上限");
+  const id = createId("grant");
+  const stamp = now();
+  const expiresAt = new Date(Date.now() + 3600000).toISOString();
+  await db.run(`
+    INSERT INTO access_grants (id, listing_id, user_id, status, api_key_encrypted, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+  `, id, listingId, req.user.id, apiKey ? encryptSecret(apiKey) : null, expiresAt, stamp, stamp);
+  const grant = await db.get("SELECT * FROM access_grants WHERE id = ?", id);
+  res.json({ grant: { ...grant, api_key_encrypted: undefined, apiKeyStatus: secretPreview(grant.api_key_encrypted) } });
+});
+
+app.get("/api/grants", requireAuth, async (req, res) => {
+  const grants = await db.all(`
+    SELECT g.*, l.title AS listing_title, l.agent_type, l.access_mode
+    FROM access_grants g
+    JOIN machine_listings l ON l.id = g.listing_id
+    WHERE g.user_id = ?
+    ORDER BY g.created_at DESC
+  `, req.user.id);
+  res.json({ grants: grants.map(g => ({ ...g, api_key_encrypted: undefined })) });
+});
+
+app.post("/api/grants/:grantId/revoke", requireAuth, async (req, res) => {
+  const grant = await db.get("SELECT * FROM access_grants WHERE id = ? AND user_id = ?", req.params.grantId, req.user.id);
+  if (!grant) return sendError(res, 404, "访问权不存在");
+  const stamp = now();
+  await db.run("UPDATE access_grants SET status = 'revoked', api_key_encrypted = NULL, updated_at = ? WHERE id = ?", stamp, grant.id);
+  const revoked = await db.get("SELECT * FROM access_grants WHERE id = ?", grant.id);
+  res.json({ grant: { ...revoked, api_key_encrypted: undefined }, ok: true });
+});
+
+app.post("/api/sessions", requireAuth, async (req, res) => {
+  const { grantId } = req.body;
+  if (!grantId) return sendError(res, 400, "grantId 必填");
+  const grant = await db.get("SELECT * FROM access_grants WHERE id = ? AND user_id = ? AND status = 'active'", grantId, req.user.id);
+  if (!grant) return sendError(res, 404, "访问权不存在或已过期");
+  if (grant.expires_at && new Date(grant.expires_at) < new Date()) {
+    await db.run("UPDATE access_grants SET status = 'expired', updated_at = ? WHERE id = ?", now(), grant.id);
+    return sendError(res, 410, "访问权已过期");
+  }
+  const listing = await db.get("SELECT * FROM machine_listings WHERE id = ?", grant.listing_id);
+  if (!listing) return sendError(res, 404, "Listing 不存在");
+  const id = createId("sess");
+  const stamp = now();
+  await db.run(`
+    INSERT INTO agent_sessions (id, grant_id, machine_id, user_id, status, agent_type, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'starting', ?, ?, ?)
+  `, id, grantId, listing.machine_id, req.user.id, listing.agent_type, stamp, stamp);
+  const session = await db.get("SELECT * FROM agent_sessions WHERE id = ?", id);
+  const { pid, workDir } = startAgentProcess(session, listing);
+  await db.run("UPDATE agent_sessions SET status = 'active', pid = ?, workspace_path = ?, started_at = ?, updated_at = ? WHERE id = ?",
+    pid, workDir, stamp, stamp, id);
+  const updated = await db.get("SELECT * FROM agent_sessions WHERE id = ?", id);
+  res.json({ session: updated });
+});
+
+app.get("/api/sessions", requireAuth, async (req, res) => {
+  const sessions = await db.all(`
+    SELECT s.*, l.title AS listing_title
+    FROM agent_sessions s
+    JOIN access_grants g ON g.id = s.grant_id
+    JOIN machine_listings l ON l.id = g.listing_id
+    WHERE s.user_id = ?
+    ORDER BY s.created_at DESC
+  `, req.user.id);
+  res.json({ sessions });
+});
+
+app.get("/api/sessions/:sessionId", requireAuth, async (req, res) => {
+  const session = await db.get("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?", req.params.sessionId, req.user.id);
+  if (!session) return sendError(res, 404, "会话不存在");
+  res.json({ session });
+});
+
+app.post("/api/sessions/:sessionId/stop", requireAuth, async (req, res) => {
+  const session = await db.get("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?", req.params.sessionId, req.user.id);
+  if (!session) return sendError(res, 404, "会话不存在");
+  if (session.status === "stopped") return res.json({ session });
+  stopAgentSession(session.id);
+  const stamp = now();
+  await db.run("UPDATE agent_sessions SET status = 'stopped', stopped_at = ?, updated_at = ? WHERE id = ?", stamp, stamp, session.id);
+  const updated = await db.get("SELECT * FROM agent_sessions WHERE id = ?", session.id);
+  res.json({ session: updated });
+});
+
+app.post("/api/sessions/:sessionId/chat", requireAuth, async (req, res) => {
+  const session = await db.get("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?", req.params.sessionId, req.user.id);
+  if (!session) return sendError(res, 404, "会话不存在");
+  if (session.status !== "active") return sendError(res, 400, "会话未激活");
+  const { message } = req.body;
+  if (!message) return sendError(res, 400, "message 必填");
+  const stamp = now();
+  await db.run("INSERT INTO agent_session_messages (id, session_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)",
+    createId("msg"), session.id, message, stamp);
+  const reply = await sendMessageToSession(session.id, message);
+  await db.run("INSERT INTO agent_session_messages (id, session_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)",
+    createId("msg"), session.id, reply, now());
+  res.json({ message: { role: "assistant", content: reply } });
+});
+
+app.get("/api/sessions/:sessionId/chat", requireAuth, async (req, res) => {
+  const session = await db.get("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?", req.params.sessionId, req.user.id);
+  if (!session) return sendError(res, 404, "会话不存在");
+  const messages = await db.all("SELECT role, content, created_at FROM agent_session_messages WHERE session_id = ? ORDER BY created_at ASC", session.id);
+  res.json({ messages });
+});
+
+app.get("/api/sessions/:sessionId/messages", requireAuth, async (req, res) => {
+  const session = await db.get("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?", req.params.sessionId, req.user.id);
+  if (!session) return sendError(res, 404, "会话不存在");
+  const messages = await db.all("SELECT role, content, created_at FROM agent_session_messages WHERE session_id = ? ORDER BY created_at ASC", session.id);
+  res.json({ messages });
+});
+
+app.get("/api/sessions/:sessionId/logs", requireAuth, async (req, res) => {
+  const session = await db.get("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?", req.params.sessionId, req.user.id);
+  if (!session) return sendError(res, 404, "会话不存在");
+  const logs = getSessionLogs(session.id);
+  res.json({ logs });
+});
+
+// ─── End Agent Machine APIs ───────────────────────────────────────────────────
 
 export function startServer() {
   return server.listen(config.port, config.host, () => {

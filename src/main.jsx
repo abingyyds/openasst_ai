@@ -464,7 +464,48 @@ const translations = {
     "Active access grants and sessions": "活跃的访问授权和会话",
     "No active sessions": "暂无活跃会话",
     "View": "查看",
-    "Open Session": "打开会话"
+    "Open Session": "打开会话",
+    "Provider Workflow": "服务商工作流",
+    "Machine Management": "机器管理",
+    "Register Machine": "注册机器",
+    "Machine Name": "机器名称",
+    "OS": "操作系统",
+    "CPU Cores": "CPU 核心",
+    "Memory (MB)": "内存 (MB)",
+    "Disk (GB)": "磁盘 (GB)",
+    "GPU": "GPU",
+    "Installed Agents": "已安装 Agent",
+    "Register": "注册",
+    "Run Check": "运行检查",
+    "Create Listing": "创建上架项",
+    "Description": "描述",
+    "Agent Type": "Agent 类型",
+    "Access Mode": "访问模式",
+    "Isolation Mode": "隔离模式",
+    "Concurrency Limit": "并发上限",
+    "Price (cents/hour)": "价格（分/小时）",
+    "Billing Unit": "计费单位",
+    "Create": "创建",
+    "My Listings": "我的上架项",
+    "No machines registered": "暂无已注册机器",
+    "No listings created": "暂无上架项",
+    "Apply": "申请",
+    "Approved": "已审核",
+    "Pending": "待审核",
+    "Verify Capability": "验证能力",
+    "Monitor Sessions": "监控会话",
+    "Step": "步骤",
+    "Rent access to controlled agent machines": "租用受控 Agent 机器访问权",
+    "Not raw VPS. Providers offer controlled access to agents they own.": "非裸 VPS。服务商提供其拥有的 Agent 的受控访问。",
+    "BYOK": "自带密钥",
+    "optional": "可选",
+    "Start Session": "开始会话",
+    "Isolation": "隔离",
+    "Concurrency": "并发",
+    "per hour": "每小时",
+    "No messages yet. Send a message to start.": "暂无消息。发送消息开始对话。",
+    "Stop Session": "停止会话",
+    "Created": "创建时间"
   }
 };
 
@@ -1344,12 +1385,15 @@ function ProviderPage({ api }) {
   const [profile, setProfile] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [machines, setMachines] = useState([]);
+  const [providerListings, setProviderListings] = useState([]);
   const [ledger, setLedger] = useState({ summary: {}, entries: [] });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [installCommand, setInstallCommand] = useState("");
   const [installToken, setInstallToken] = useState("");
   const { language, t } = useI18n();
+  const [tab, setTab] = useState("overview");
   const [draft, setDraft] = useState({
     displayName: "",
     contact: "",
@@ -1373,6 +1417,8 @@ function ProviderPage({ api }) {
     templateDiskGb: 10,
     templatePricePerHourCents: 18
   });
+  const [machDraft, setMachDraft] = useState({ name: "", os: "linux", cpu: 4, memoryMb: 8192, diskGb: 100, gpu: "", installedAgents: "echo-agent" });
+  const [listDraft, setListDraft] = useState({ machineId: "", title: "", description: "", agentType: "echo-agent", accessMode: "chat", isolationMode: "trusted", concurrencyLimit: 1, pricePerHourCents: 0, billingUnit: "session" });
 
   const load = useCallback(async () => {
     setError("");
@@ -1384,6 +1430,14 @@ function ProviderPage({ api }) {
       if (payload.profile) {
         const templatePayload = await api("/api/provider/templates");
         setTemplates(templatePayload.templates || []);
+        try {
+          const machPayload = await api("/api/machines");
+          setMachines(machPayload.machines || []);
+        } catch {}
+        try {
+          const lstPayload = await api("/api/provider/listings");
+          setProviderListings(lstPayload.listings || []);
+        } catch {}
       } else {
         setTemplates([]);
       }
@@ -1429,7 +1483,7 @@ function ProviderPage({ api }) {
     }
   }
 
-  async function createNode(event) {
+  async function registerNode(event) {
     event.preventDefault();
     setBusy(true);
     setError("");
@@ -1439,22 +1493,15 @@ function ProviderPage({ api }) {
         body: {
           name: draft.nodeName,
           region: draft.region,
-          totalCpu: draft.totalCpu,
-          totalMemoryMb: draft.totalMemoryMb,
-          totalDiskGb: draft.totalDiskGb,
-          pricePerHourCents: draft.pricePerHourCents,
-          publicHost: draft.publicHost
+          totalCpu: Number(draft.totalCpu),
+          totalMemoryMb: Number(draft.totalMemoryMb),
+          totalDiskGb: Number(draft.totalDiskGb),
+          pricePerHourCents: Number(draft.pricePerHourCents),
+          publicHost: draft.publicHost || undefined
         }
       });
-      setNodes((items) => [payload.node, ...items]);
       setInstallCommand(payload.installCommand || "");
-      setInstallToken(payload.token || "");
-      setDraft((current) => ({
-        ...current,
-        nodeName: "",
-        publicHost: "",
-        pricePerHourCents: payload.node.pricePerHourCents || current.pricePerHourCents
-      }));
+      setInstallToken(payload.nodeToken || payload.token || "");
       await load();
     } catch (err) {
       setError(translateErrorMessage(err.message, language));
@@ -1465,12 +1512,11 @@ function ProviderPage({ api }) {
 
   async function rotateToken(nodeId) {
     setBusy(true);
-    setError("");
     try {
       const payload = await api(`/api/provider/nodes/${nodeId}/rotate-token`, { method: "POST" });
-      setNodes((items) => items.map((node) => (node.id === nodeId ? payload.node : node)));
-      setInstallCommand(payload.installCommand || "");
-      setInstallToken(payload.token || "");
+      setInstallCommand(payload.installCommand || installCommand);
+      setInstallToken(payload.nodeToken || payload.token || "");
+      await load();
     } catch (err) {
       setError(translateErrorMessage(err.message, language));
     } finally {
@@ -1478,38 +1524,25 @@ function ProviderPage({ api }) {
     }
   }
 
-  async function publishTemplate(event) {
+  async function registerMachine(event) {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const payload = await api("/api/provider/templates", {
+      await api("/api/machines", {
         method: "POST",
         body: {
-          name: draft.templateName,
-          framework: draft.templateFramework,
-          description: draft.templateDescription,
-          status: draft.templateStatus,
-          defaultModelProvider: draft.templateModelProvider,
-          defaultModel: draft.templateModel,
-          defaultChannels: ["web_chat"],
-          defaultSkills: [],
-          installMethod: "provider-managed",
-          runtimeKind: "provider-node",
-          planName: draft.templatePlanName,
-          cpu: draft.templateCpu,
-          memoryMb: draft.templateMemoryMb,
-          diskGb: draft.templateDiskGb,
-          region: draft.region,
-          pricePerHourCents: draft.templatePricePerHourCents
+          name: machDraft.name,
+          os: machDraft.os,
+          cpu: Number(machDraft.cpu),
+          memoryMb: Number(machDraft.memoryMb),
+          diskGb: Number(machDraft.diskGb),
+          gpu: machDraft.gpu || undefined,
+          installedAgents: machDraft.installedAgents
         }
       });
-      setTemplates((items) => [payload.template, ...items]);
-      setDraft((current) => ({
-        ...current,
-        templateName: "",
-        templateDescription: ""
-      }));
+      setMachDraft({ name: "", os: "linux", cpu: 4, memoryMb: 8192, diskGb: 100, gpu: "", installedAgents: "echo-agent" });
+      await load();
     } catch (err) {
       setError(translateErrorMessage(err.message, language));
     } finally {
@@ -1517,227 +1550,239 @@ function ProviderPage({ api }) {
     }
   }
 
+  async function createListing(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/listings", {
+        method: "POST",
+        body: {
+          machineId: listDraft.machineId,
+          title: listDraft.title,
+          description: listDraft.description,
+          agentType: listDraft.agentType,
+          accessMode: listDraft.accessMode,
+          isolationMode: listDraft.isolationMode,
+          concurrencyLimit: Number(listDraft.concurrencyLimit),
+          pricePerHourCents: Number(listDraft.pricePerHourCents),
+          billingUnit: listDraft.billingUnit
+        }
+      });
+      setListDraft({ machineId: "", title: "", description: "", agentType: "echo-agent", accessMode: "chat", isolationMode: "trusted", concurrencyLimit: 1, pricePerHourCents: 0, billingUnit: "session" });
+      await load();
+    } catch (err) {
+      setError(translateErrorMessage(err.message, language));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tabs = [
+    { id: "overview", label: t("Provider") },
+    { id: "machines", label: t("Machine Management") },
+    { id: "listings", label: t("My Listings") }
+  ];
+
   return (
-    <div className="page-stack">
+    <div className="page-content">
       <PageHeader
-        eyebrow="Provider"
-        title="Provider console"
-        subtitle="Apply for provider access, add nodes, and manage the install token handoff."
+        title={t("Provider Workflow")}
+        subtitle="Apply for provider access, register machines, create listings, and manage nodes."
         actions={<button type="button" onClick={load}><RefreshCw size={16} /> {t("Refresh")}</button>}
       />
 
-      <Panel
-        title="Provider summary"
-        subtitle="Profile status, node count, and ledger snapshot"
-        icon={<ServerCog size={16} />}
-      >
-        {error ? <Pill tone="danger">{error}</Pill> : null}
-        <div className="grid-3">
-          <Metric label="Profile" value={translateStatus(profile?.status || "none", language)} note={profile ? profile.displayName : "Apply first"} icon={<BadgeInfo size={15} />} />
-          <Metric label="Nodes" value={nodes.length} note={formatHealthyNodes(nodes.filter((node) => node.status === "healthy").length, language)} icon={<Server size={15} />} tone="success" />
-          <Metric label="Agents" value={templates.length} note={formatActiveAgents(templates.filter((template) => template.status === "active").length, language)} icon={<Bot size={15} />} />
-          <Metric label="Ledger" value={formatMoney(ledger?.summary?.providerCents || 0)} note={formatRuntimeHours(ledger?.summary?.runtimeHours || 0, language)} icon={<Coins size={15} />} tone="warning" />
-        </div>
-      </Panel>
-
-      <div className="grid-2">
-        <Panel title="Provider profile" subtitle="Approved providers can add nodes" icon={<BadgeInfo size={16} />}>
-          <form className="stack" onSubmit={saveProfile}>
-            <label className="section">
-              <span className="section-title">{t("Display name")}</span>
-              <input value={draft.displayName} onChange={(event) => setDraft({ ...draft, displayName: event.target.value })} />
-            </label>
-            <label className="section">
-              <span className="section-title">{t("Contact")}</span>
-              <input value={draft.contact} onChange={(event) => setDraft({ ...draft, contact: event.target.value })} />
-            </label>
-            <label className="section">
-              <span className="section-title">{t("Payout note")}</span>
-              <textarea value={draft.payoutNote} onChange={(event) => setDraft({ ...draft, payoutNote: event.target.value })} />
-            </label>
-            <button className="primary" type="submit" disabled={busy}>
-              <Check size={16} /> {t("Save provider info")}
-            </button>
-          </form>
-        </Panel>
-
-        <Panel title="Node handoff" subtitle="Generate a token and install command for a server you control" icon={<Server size={16} />}>
-          <form className="stack" onSubmit={createNode}>
-            <div className="form-2">
-              <label className="section">
-                <span className="section-title">{t("Node name")}</span>
-                <input value={draft.nodeName} onChange={(event) => setDraft({ ...draft, nodeName: event.target.value })} placeholder={t("e.g. shanghai-node-01")} />
-              </label>
-              <label className="section">
-                <span className="section-title">{t("Region")}</span>
-                <input value={draft.region} onChange={(event) => setDraft({ ...draft, region: event.target.value })} />
-              </label>
-            </div>
-            <div className="form-2">
-              <label className="section">
-                <span className="section-title">{t("CPU")}</span>
-                <input type="number" value={draft.totalCpu} onChange={(event) => setDraft({ ...draft, totalCpu: Number(event.target.value) })} />
-              </label>
-              <label className="section">
-                <span className="section-title">{t("Memory MB")}</span>
-                <input type="number" value={draft.totalMemoryMb} onChange={(event) => setDraft({ ...draft, totalMemoryMb: Number(event.target.value) })} />
-              </label>
-            </div>
-            <div className="form-2">
-              <label className="section">
-                <span className="section-title">{t("Disk GB")}</span>
-                <input type="number" value={draft.totalDiskGb} onChange={(event) => setDraft({ ...draft, totalDiskGb: Number(event.target.value) })} />
-              </label>
-              <label className="section">
-                <span className="section-title">{t("Price / hour (cents)")}</span>
-                <input type="number" value={draft.pricePerHourCents} onChange={(event) => setDraft({ ...draft, pricePerHourCents: Number(event.target.value) })} />
-              </label>
-            </div>
-            <label className="section">
-              <span className="section-title">{t("Public host")}</span>
-              <input value={draft.publicHost} onChange={(event) => setDraft({ ...draft, publicHost: event.target.value })} placeholder={t("optional public hostname")} />
-            </label>
-            <button className="primary" type="submit" disabled={busy || !profile}>
-              <ServerCog size={16} /> {t("Create node token")}
-            </button>
-            <div className="muted">
-              {t("Node registration is token-based. The server calls back to the platform with a node agent and heartbeat, and no SSH password is stored.")}
-            </div>
-          </form>
-        </Panel>
+      <div className="tabbar">
+        {tabs.map(tb => (
+          <button key={tb.id} className={tab === tb.id ? "active" : ""} onClick={() => setTab(tb.id)}>{tb.label}</button>
+        ))}
       </div>
 
-      <Panel title="Publish Agent" subtitle="Create a provider-managed marketplace Agent that routes web chat to your healthy node" icon={<Bot size={16} />}>
-        <form className="stack" onSubmit={publishTemplate}>
-          <div className="form-2">
-            <label className="section">
-              <span className="section-title">{t("Agent name")}</span>
-              <input value={draft.templateName} onChange={(event) => setDraft({ ...draft, templateName: event.target.value })} placeholder={t("e.g. Support Concierge")} />
-            </label>
-            <label className="section">
-              <span className="section-title">{t("Framework")}</span>
-              <select value={draft.templateFramework} onChange={(event) => setDraft({ ...draft, templateFramework: event.target.value })}>
-                <option value="custom">{t("Custom")}</option>
-                <option value="hermes">Hermes</option>
-                <option value="openclaw">OpenClaw</option>
-              </select>
-            </label>
-          </div>
-          <label className="section">
-            <span className="section-title">{t("Marketplace description")}</span>
-            <textarea value={draft.templateDescription} onChange={(event) => setDraft({ ...draft, templateDescription: event.target.value })} placeholder={t("What this Agent does for buyers")} />
-          </label>
-          <div className="form-2">
-            <label className="section">
-              <span className="section-title">{t("Default model provider")}</span>
-              <select value={draft.templateModelProvider} onChange={(event) => setDraft({ ...draft, templateModelProvider: event.target.value })}>
-                {modelProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
-              </select>
-            </label>
-            <label className="section">
-              <span className="section-title">{t("Default model")}</span>
-              <input value={draft.templateModel} onChange={(event) => setDraft({ ...draft, templateModel: event.target.value })} />
-            </label>
-          </div>
-          <div className="form-2">
-            <label className="section">
-              <span className="section-title">{t("Plan name")}</span>
-              <input value={draft.templatePlanName} onChange={(event) => setDraft({ ...draft, templatePlanName: event.target.value })} />
-            </label>
-            <label className="section">
-              <span className="section-title">{t("Agent price / hour (cents)")}</span>
-              <input type="number" value={draft.templatePricePerHourCents} onChange={(event) => setDraft({ ...draft, templatePricePerHourCents: Number(event.target.value) })} />
-            </label>
-          </div>
-          <div className="form-2">
-            <label className="section">
-              <span className="section-title">{t("CPU")}</span>
-              <input type="number" value={draft.templateCpu} onChange={(event) => setDraft({ ...draft, templateCpu: Number(event.target.value) })} />
-            </label>
-            <label className="section">
-              <span className="section-title">{t("Memory MB")}</span>
-              <input type="number" value={draft.templateMemoryMb} onChange={(event) => setDraft({ ...draft, templateMemoryMb: Number(event.target.value) })} />
-            </label>
-          </div>
-          <button className="primary" type="submit" disabled={busy || profile?.status !== "approved"}>
-            <PanelTop size={16} /> {t("Publish to marketplace")}
-          </button>
-          <div className="muted">{t("Active provider Agents appear in the marketplace immediately. Purchases are provisioned on provider nodes and Web Chat is dispatched as node tasks.")}</div>
-        </form>
-        <div className="stack list-gap">
-          {templates.length === 0 ? <Empty>No provider Agents published yet.</Empty> : null}
-          {templates.map((template) => (
-            <div className="item" key={template.id}>
-              <div className="item-row">
-                <div>
-                  <strong>{template.name}</strong>
-                  <div className="muted">{template.framework} · {template.runtimeKind || "provider-node"}</div>
-                </div>
-                <StatusPill status={template.status} />
-              </div>
-              <div className="chip-row">
-                <span className="chip">{template.plans?.[0]?.name || t("No plan")}</span>
-                <span className="chip">{formatHourlyMoney(template.plans?.[0]?.pricePerHourCents || 0, language)}</span>
-                <span className="chip">{t("Web Chat")}</span>
-              </div>
+      {error && <Pill tone="danger">{error}</Pill>}
+
+      {tab === "overview" && (
+        <>
+          <Panel title="Provider summary" subtitle="Profile status, node count, and ledger snapshot" icon={<ServerCog size={16} />}>
+            <div className="grid-3">
+              <Metric label="Profile" value={translateStatus(profile?.status || "none", language)} note={profile ? profile.displayName : "Apply first"} icon={<BadgeInfo size={15} />} />
+              <Metric label="Nodes" value={nodes.length} note={formatHealthyNodes(nodes.filter((node) => node.status === "healthy").length, language)} icon={<Server size={15} />} tone="success" />
+              <Metric label="Agents" value={templates.length} note={formatActiveAgents(templates.filter((template) => template.status === "active").length, language)} icon={<Bot size={15} />} />
+              <Metric label="Ledger" value={formatMoney(ledger?.summary?.providerCents || 0)} note={formatRuntimeHours(ledger?.summary?.runtimeHours || 0, language)} icon={<Coins size={15} />} tone="warning" />
             </div>
-          ))}
-        </div>
-      </Panel>
+          </Panel>
 
-      <Panel title="Install command" subtitle="One-line callback install for the node agent" icon={<MonitorCog size={16} />}>
-        {installCommand ? (
-          <CopyableCommand
-            label="Latest command"
-            value={installCommand}
-            helper="Use this on the server you want to hand to the platform."
-          />
-        ) : (
-          <Empty>After creating a node, copy the install command and run it on the target server.</Empty>
-        )}
-        {installToken ? <div className="provider-note">{t("This token is only recoverable from the command shown here. Rotate the token if this browser session is lost.")}</div> : null}
-      </Panel>
+          <Panel title={t("Apply")} subtitle="Register or update your provider profile" icon={<BadgeInfo size={16} />}>
+            <form onSubmit={saveProfile} className="form-grid">
+              <label className="section">
+                <span className="section-title">Display name</span>
+                <input value={draft.displayName} onChange={(e) => setDraft({ ...draft, displayName: e.target.value })} required />
+              </label>
+              <label className="section">
+                <span className="section-title">Contact</span>
+                <input value={draft.contact} onChange={(e) => setDraft({ ...draft, contact: e.target.value })} />
+              </label>
+              <label className="section">
+                <span className="section-title">Payout note</span>
+                <input value={draft.payoutNote} onChange={(e) => setDraft({ ...draft, payoutNote: e.target.value })} />
+              </label>
+              <button className="primary" type="submit" disabled={busy}><BadgeInfo size={14} /> {busy ? "..." : t("Apply")}</button>
+            </form>
+          </Panel>
 
-      <Panel title="Nodes" subtitle="Registration, heartbeat, and approval visibility" icon={<Server size={16} />}>
-        <div className="stack">
-          {nodes.length === 0 ? <Empty>No registered nodes yet.</Empty> : null}
-          {nodes.map((node) => (
-            <div className="item" key={node.id}>
-              <div className="item-row">
-                <div>
-                  <strong>{node.name}</strong>
-                  <div className="muted">
-                    {node.region} · {translateStatus(node.providerStatus || "unknown", language)} · {translateStatus(node.dockerStatus || "unknown", language)}
+          <Panel title="Nodes" subtitle="Registration, heartbeat, and approval visibility" icon={<Server size={16} />}>
+            <div className="stack">
+              {nodes.length === 0 ? <Empty>No registered nodes yet.</Empty> : null}
+              {nodes.map((node) => (
+                <div className="item" key={node.id}>
+                  <div className="item-row">
+                    <div>
+                      <strong>{node.name}</strong>
+                      <div className="muted">{node.region} &middot; {translateStatus(node.providerStatus || "unknown", language)} &middot; {translateStatus(node.dockerStatus || "unknown", language)}</div>
+                    </div>
+                    <StatusPill status={node.status} />
+                  </div>
+                  <div className="chip-row">
+                    <span className="chip">{node.totalCpu} CPU</span>
+                    <span className="chip">{node.totalMemoryMb} MB</span>
+                    <span className="chip">{node.totalDiskGb} GB</span>
+                    <span className="chip">{node.agentVersion || t("no agent")}</span>
+                  </div>
+                  <div className="item-row">
+                    <span className="muted">{t("Heartbeat")} {formatTime(node.lastHeartbeatAt)}</span>
+                    <button type="button" onClick={() => rotateToken(node.id)} disabled={busy}><RefreshCw size={14} /> {t("Rotate token")}</button>
                   </div>
                 </div>
-                <StatusPill status={node.status} />
-              </div>
-              <div className="chip-row">
-                <span className="chip">{node.totalCpu} CPU</span>
-                <span className="chip">{node.totalMemoryMb} MB</span>
-                <span className="chip">{node.totalDiskGb} GB</span>
-                <span className="chip">{node.agentVersion || t("no agent")}</span>
-              </div>
-              <div className="item-row">
-                <span className="muted">{t("Heartbeat")} {formatTime(node.lastHeartbeatAt)}</span>
-                <div className="toolbar">
-                  <button type="button" onClick={() => rotateToken(node.id)} disabled={busy}>
-                    <RefreshCw size={16} /> {t("Rotate token")}
-                  </button>
-                </div>
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </Panel>
+            <form onSubmit={registerNode} className="form-grid" style={{ marginTop: 16 }}>
+              <label className="section"><span className="section-title">Node name</span><input value={draft.nodeName} onChange={(e) => setDraft({ ...draft, nodeName: e.target.value })} required /></label>
+              <label className="section"><span className="section-title">Region</span><input value={draft.region} onChange={(e) => setDraft({ ...draft, region: e.target.value })} /></label>
+              <div className="form-row">
+                <label className="section"><span className="section-title">CPU</span><input type="number" value={draft.totalCpu} onChange={(e) => setDraft({ ...draft, totalCpu: e.target.value })} /></label>
+                <label className="section"><span className="section-title">Memory (MB)</span><input type="number" value={draft.totalMemoryMb} onChange={(e) => setDraft({ ...draft, totalMemoryMb: e.target.value })} /></label>
+                <label className="section"><span className="section-title">Disk (GB)</span><input type="number" value={draft.totalDiskGb} onChange={(e) => setDraft({ ...draft, totalDiskGb: e.target.value })} /></label>
+              </div>
+              <button className="primary" type="submit" disabled={busy}><Server size={14} /> {busy ? "..." : t("Register")}</button>
+            </form>
+            {installCommand && <CopyableCommand label="Install command" value={installCommand} helper="Run this on the target server." />}
+          </Panel>
 
-      <Panel title="Ledger" subtitle="Internal estimate only, no real payment" icon={<Coins size={16} />}>
-        <div className="grid-3">
-          <Metric label="Gross" value={formatMoney(ledger?.summary?.grossCents || 0)} icon={<Coins size={15} />} />
-          <Metric label="Platform fee" value={formatMoney(ledger?.summary?.platformFeeCents || 0)} icon={<Gauge size={15} />} />
-          <Metric label="Provider" value={formatMoney(ledger?.summary?.providerCents || 0)} icon={<ServerCog size={15} />} tone="success" />
-        </div>
-      </Panel>
+          <Panel title="Ledger" subtitle="Internal estimate only, no real payment" icon={<Coins size={16} />}>
+            <div className="grid-3">
+              <Metric label="Gross" value={formatMoney(ledger?.summary?.grossCents || 0)} icon={<Coins size={15} />} />
+              <Metric label="Platform fee" value={formatMoney(ledger?.summary?.platformFeeCents || 0)} icon={<Gauge size={15} />} />
+              <Metric label="Provider" value={formatMoney(ledger?.summary?.providerCents || 0)} icon={<ServerCog size={15} />} tone="success" />
+            </div>
+          </Panel>
+        </>
+      )}
+
+      {tab === "machines" && (
+        <>
+          <Panel title={t("Register Machine")} subtitle="Add a new machine to your fleet" icon={<MonitorCog size={16} />}>
+            <form onSubmit={registerMachine} className="form-grid">
+              <label className="section"><span className="section-title">{t("Machine Name")}</span><input value={machDraft.name} onChange={(e) => setMachDraft({ ...machDraft, name: e.target.value })} required /></label>
+              <div className="form-row">
+                <label className="section"><span className="section-title">{t("OS")}</span><select value={machDraft.os} onChange={(e) => setMachDraft({ ...machDraft, os: e.target.value })}><option value="linux">Linux</option><option value="windows">Windows</option></select></label>
+                <label className="section"><span className="section-title">{t("CPU Cores")}</span><input type="number" value={machDraft.cpu} onChange={(e) => setMachDraft({ ...machDraft, cpu: e.target.value })} /></label>
+                <label className="section"><span className="section-title">{t("Memory (MB)")}</span><input type="number" value={machDraft.memoryMb} onChange={(e) => setMachDraft({ ...machDraft, memoryMb: e.target.value })} /></label>
+              </div>
+              <div className="form-row">
+                <label className="section"><span className="section-title">{t("Disk (GB)")}</span><input type="number" value={machDraft.diskGb} onChange={(e) => setMachDraft({ ...machDraft, diskGb: e.target.value })} /></label>
+                <label className="section"><span className="section-title">{t("GPU")}</span><input value={machDraft.gpu} onChange={(e) => setMachDraft({ ...machDraft, gpu: e.target.value })} placeholder="optional" /></label>
+                <label className="section"><span className="section-title">{t("Installed Agents")}</span><input value={machDraft.installedAgents} onChange={(e) => setMachDraft({ ...machDraft, installedAgents: e.target.value })} /></label>
+              </div>
+              <button className="primary" type="submit" disabled={busy}><MonitorCog size={14} /> {busy ? "..." : t("Register")}</button>
+            </form>
+          </Panel>
+
+          <Panel title={t("Machine Management")} subtitle="Your registered machines" icon={<Server size={16} />}>
+            {machines.length === 0 ? <Empty icon={<Server size={20} />}>{t("No machines registered")}</Empty> : (
+              <div className="stack">
+                {machines.map(m => (
+                  <div className="item" key={m.id}>
+                    <div className="item-row">
+                      <div><strong>{m.name}</strong><div className="muted">{m.os} &middot; {m.cpu} CPU &middot; {m.memoryMb} MB</div></div>
+                      <StatusPill status={m.status || "active"} />
+                    </div>
+                    <div className="chip-row">
+                      <span className="chip">{m.diskGb} GB disk</span>
+                      {m.gpu && <span className="chip">{m.gpu}</span>}
+                      <span className="chip">{m.installedAgents}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+        </>
+      )}
+
+      {tab === "listings" && (
+        <>
+          <Panel title={t("Create Listing")} subtitle="Publish a new agent listing for users to rent" icon={<Zap size={16} />}>
+            <form onSubmit={createListing} className="form-grid">
+              <div className="form-row">
+                <label className="section"><span className="section-title">{t("Title")}</span><input value={listDraft.title} onChange={(e) => setListDraft({ ...listDraft, title: e.target.value })} required /></label>
+                <label className="section"><span className="section-title">{t("Agent Type")}</span><input value={listDraft.agentType} onChange={(e) => setListDraft({ ...listDraft, agentType: e.target.value })} /></label>
+              </div>
+              <label className="section"><span className="section-title">{t("Description")}</span><textarea value={listDraft.description} onChange={(e) => setListDraft({ ...listDraft, description: e.target.value })} style={{ minHeight: 60 }} /></label>
+              <div className="form-row">
+                <label className="section"><span className="section-title">{t("Access Mode")}</span><select value={listDraft.accessMode} onChange={(e) => setListDraft({ ...listDraft, accessMode: e.target.value })}><option value="chat">Chat</option><option value="api">API</option></select></label>
+                <label className="section"><span className="section-title">{t("Isolation Mode")}</span><select value={listDraft.isolationMode} onChange={(e) => setListDraft({ ...listDraft, isolationMode: e.target.value })}><option value="trusted">Trusted</option><option value="sandboxed">Sandboxed</option></select></label>
+                <label className="section"><span className="section-title">{t("Concurrency Limit")}</span><input type="number" value={listDraft.concurrencyLimit} onChange={(e) => setListDraft({ ...listDraft, concurrencyLimit: e.target.value })} /></label>
+              </div>
+              <div className="form-row">
+                <label className="section"><span className="section-title">{t("Price (cents/hour)")}</span><input type="number" value={listDraft.pricePerHourCents} onChange={(e) => setListDraft({ ...listDraft, pricePerHourCents: e.target.value })} /></label>
+                <label className="section"><span className="section-title">{t("Billing Unit")}</span><select value={listDraft.billingUnit} onChange={(e) => setListDraft({ ...listDraft, billingUnit: e.target.value })}><option value="session">Session</option><option value="hour">Hour</option></select></label>
+                {machines.length > 0 && (
+                  <label className="section"><span className="section-title">Machine</span><select value={listDraft.machineId} onChange={(e) => setListDraft({ ...listDraft, machineId: e.target.value })}><option value="">Auto</option>{machines.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+                )}
+              </div>
+              <button className="primary" type="submit" disabled={busy}><Zap size={14} /> {busy ? "..." : t("Create")}</button>
+            </form>
+          </Panel>
+
+          <Panel title={t("My Listings")} subtitle="Your published agent listings" icon={<Bot size={16} />}>
+            {providerListings.length === 0 ? <Empty icon={<Bot size={20} />}>{t("No listings created")}</Empty> : (
+              <div className="stack">
+                {providerListings.map(l => (
+                  <div className="item" key={l.id}>
+                    <div className="item-row">
+                      <div><strong>{l.title}</strong><div className="muted">{l.agent_type} &middot; {l.access_mode}</div></div>
+                      <StatusPill status={l.status || "active"} />
+                    </div>
+                    <div className="chip-row">
+                      <span className="chip">{l.isolation_mode || "trusted"}</span>
+                      <span className="chip">{l.price_per_hour_cents ? formatMoney(l.price_per_hour_cents) + "/h" : t("Free")}</span>
+                      {l.concurrency_limit && <span className="chip">{t("Concurrency")}: {l.concurrency_limit}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Templates" subtitle="Published agent templates" icon={<Bot size={16} />}>
+            <div className="stack">
+              {templates.length === 0 ? <Empty>No templates yet.</Empty> : null}
+              {templates.map((template) => (
+                <div className="item" key={template.id}>
+                  <div className="item-row">
+                    <div><strong>{template.name}</strong><div className="muted">{template.framework} &middot; {template.runtimeKind || "provider-node"}</div></div>
+                    <StatusPill status={template.status} />
+                  </div>
+                  <div className="chip-row">
+                    <span className="chip">{template.plans?.[0]?.name || t("No plan")}</span>
+                    <span className="chip">{formatHourlyMoney(template.plans?.[0]?.pricePerHourCents || 0, language)}</span>
+                    <span className="chip">{t("Web Chat")}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </>
+      )}
     </div>
   );
 }
@@ -2888,35 +2933,44 @@ function AgentMarketPage({ api }) {
 
   return (
     <div className="page-content">
-      <Panel title={t("Agent Machine Marketplace")} subtitle={t("Browse provider agent machines and rent access sessions")} icon={<Zap size={16} />}>
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ fontSize: 12 }}>{t("API Key (BYOK, optional)")}</label>
-          <input className="input" type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-..." style={{ maxWidth: 320 }} />
-        </div>
-        {listings.length === 0 ? (
-          <div className="muted">{t("No active listings available")}</div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead><tr>
-                <th>{t("Title")}</th><th>{t("Agent")}</th><th>{t("Access")}</th><th>{t("Provider")}</th><th>{t("Price")}</th><th></th>
-              </tr></thead>
-              <tbody>
-                {listings.map(l => (
-                  <tr key={l.id}>
-                    <td><strong>{l.title}</strong><br/><span className="muted">{l.description}</span></td>
-                    <td><Pill tone="neutral">{l.agent_type}</Pill></td>
-                    <td>{l.access_mode}</td>
-                    <td>{l.provider_name}</td>
-                    <td>{l.price_per_hour_cents ? formatMoney(l.price_per_hour_cents) + "/h" : t("Free")}</td>
-                    <td><button className="btn btn-sm" disabled={renting === l.id} onClick={() => rent(l)}>{renting === l.id ? "..." : t("Rent")}</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      <PageHeader
+        title={t("Agent Machine Marketplace")}
+        subtitle={t("Rent access to controlled agent machines")}
+      />
+      <Panel title={t("BYOK")} subtitle={t("API Key (BYOK, optional)")} icon={<KeyRound size={16} />}>
+        <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="sk-..." style={{ maxWidth: 360 }} />
+        <div className="muted" style={{ marginTop: 6, fontSize: "0.78rem" }}>{t("Not raw VPS. Providers offer controlled access to agents they own.")}</div>
       </Panel>
+      {listings.length === 0 ? (
+        <Empty title={t("No active listings available")} icon={<Zap size={20} />}>{t("No active listings available")}</Empty>
+      ) : (
+        <div className="listing-grid">
+          {listings.map(l => (
+            <div className="listing-card" key={l.id}>
+              <div className="listing-card-header">
+                <div className="listing-card-icon"><Bot size={20} /></div>
+                <div>
+                  <div className="listing-card-title">{l.title}</div>
+                  <div className="muted" style={{ fontSize: "0.78rem" }}>{l.provider_name}</div>
+                </div>
+              </div>
+              {l.description && <div className="muted" style={{ fontSize: "0.8rem" }}>{l.description}</div>}
+              <div className="chip-row">
+                <span className="chip">{l.agent_type}</span>
+                <span className="chip">{l.access_mode}</span>
+                <span className="chip">{l.isolation_mode || "trusted"}</span>
+                {l.concurrency_limit && <span className="chip">{t("Concurrency")}: {l.concurrency_limit}</span>}
+              </div>
+              <div className="listing-card-footer">
+                <strong>{l.price_per_hour_cents ? formatMoney(l.price_per_hour_cents) + "/" + t("per hour") : t("Free")}</strong>
+                <button className="primary" disabled={renting === l.id} onClick={() => rent(l)}>
+                  <Play size={14} /> {renting === l.id ? "..." : t("Start Session")}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2928,6 +2982,7 @@ function AgentSessionPage({ api, token, id }) {
   const [sending, setSending] = useState(false);
   const [logs, setLogs] = useState([]);
   const { t } = useI18n();
+  const chatEndRef = useRef(null);
 
   const load = useCallback(async () => {
     const { session: s } = await api(`/api/sessions/${id}`);
@@ -2941,6 +2996,7 @@ function AgentSessionPage({ api, token, id }) {
   }, [api, id]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   async function send(e) {
     e.preventDefault();
@@ -2966,29 +3022,50 @@ function AgentSessionPage({ api, token, id }) {
 
   return (
     <div className="page-content">
-      <Panel title={`${t("Session")}: ${session.id}`} subtitle={`${t("Agent")}: ${session.agent_type} | ${t("Status")}: ${session.status}`} icon={<MessageSquare size={16} />}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <Pill tone={statusTone(session.status)}>{session.status}</Pill>
-          {session.status === "active" && <button className="btn btn-sm" onClick={stop}>{t("Stop")}</button>}
+      <div className="session-header">
+        <div>
+          <h2 style={{ margin: 0, fontSize: "1.1rem" }}>{t("Session")}</h2>
+          <div className="muted" style={{ fontSize: "0.78rem" }}>{session.agent_type} &middot; {session.id.slice(0, 12)}</div>
         </div>
-        <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 12, maxHeight: 400, overflowY: "auto", marginBottom: 12 }}>
-          {messages.length === 0 && <div className="muted">{t("No messages yet")}</div>}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Pill tone={statusTone(session.status)}>{session.status}</Pill>
+          {session.status === "active" && (
+            <button className="danger" onClick={stop}><Square size={14} /> {t("Stop Session")}</button>
+          )}
+        </div>
+      </div>
+
+      <div className="chat-container">
+        <div className="chat-messages">
+          {messages.length === 0 && (
+            <div className="chat-empty">
+              <MessageSquare size={24} style={{ opacity: 0.3 }} />
+              <div className="muted">{t("No messages yet. Send a message to start.")}</div>
+            </div>
+          )}
           {messages.map((m, i) => (
-            <div key={i} style={{ marginBottom: 8 }}>
-              <strong>{m.role}:</strong> <span>{m.content}</span>
+            <div key={i} className={`chat-bubble ${m.role}`}>
+              <div className="chat-bubble-role">{m.role === "user" ? t("user") : t("assistant")}</div>
+              <div className="chat-bubble-content">{m.content}</div>
             </div>
           ))}
+          <div ref={chatEndRef} />
         </div>
         {session.status === "active" && (
-          <form onSubmit={send} style={{ display: "flex", gap: 8 }}>
-            <input className="input" style={{ flex: 1 }} value={input} onChange={e => setInput(e.target.value)} placeholder={t("Type a message...")} />
-            <button className="btn" type="submit" disabled={sending}>{sending ? "..." : t("Send")}</button>
+          <form className="chat-input-bar" onSubmit={send}>
+            <input value={input} onChange={e => setInput(e.target.value)} placeholder={t("Type a message...")} />
+            <button className="primary" type="submit" disabled={sending}>
+              {sending ? "..." : t("Send")}
+            </button>
           </form>
         )}
-      </Panel>
+      </div>
+
       {logs.length > 0 && (
         <Panel title={t("Logs")} icon={<FileText size={16} />}>
-          <pre style={{ fontSize: 11, maxHeight: 200, overflow: "auto" }}>{logs.map(l => `[${l.src}] ${l.msg}`).join("")}</pre>
+          <div className="session-logs">
+            {logs.map((l, i) => <div key={i} className="log-line"><span className="log-src">[{l.src}]</span> {l.msg}</div>)}
+          </div>
         </Panel>
       )}
     </div>
@@ -3008,25 +3085,33 @@ function SessionsPage({ api }) {
 
   return (
     <div className="page-content">
-      <Panel title={t("My Sessions")} subtitle={t("Active access grants and sessions")} icon={<Activity size={16} />}>
-        {sessions.length === 0 ? <div className="muted">{t("No active sessions")}</div> : (
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>{t("Agent")}</th><th>{t("Status")}</th><th>{t("Listing")}</th><th></th></tr></thead>
-              <tbody>
-                {sessions.map(s => (
-                  <tr key={s.id}>
-                    <td>{s.agent_type}</td>
-                    <td><Pill tone={statusTone(s.status)}>{s.status}</Pill></td>
-                    <td>{s.listing_title}</td>
-                    <td><button className="btn btn-sm" onClick={() => setRoute(`session/${s.id}`)}>{t("Open Session")}</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+      <PageHeader title={t("My Sessions")} subtitle={t("Active access grants and sessions")} />
+      {sessions.length === 0 ? (
+        <Empty title={t("No active sessions")} icon={<Activity size={20} />}>
+          {t("No active sessions")}
+        </Empty>
+      ) : (
+        <div className="sessions-grid">
+          {sessions.map(s => (
+            <div className="session-card" key={s.id}>
+              <div className="session-card-top">
+                <div>
+                  <div style={{ fontWeight: 600 }}>{s.listing_title || s.agent_type}</div>
+                  <div className="muted" style={{ fontSize: "0.78rem" }}>{s.agent_type}</div>
+                </div>
+                <Pill tone={statusTone(s.status)}>{s.status}</Pill>
+              </div>
+              <div className="chip-row">
+                {s.created_at && <span className="chip">{t("Created")}: {formatTime(s.created_at)}</span>}
+                {s.started_at && <span className="chip">{t("Started")}: {formatTime(s.started_at)}</span>}
+              </div>
+              <button className="primary" onClick={() => setRoute(`session/${s.id}`)}>
+                <MessageSquare size={14} /> {t("Open Session")}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

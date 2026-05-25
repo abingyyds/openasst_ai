@@ -16,7 +16,8 @@
     "db:migrate": "node --no-warnings=ExperimentalWarning server/scripts/migrate.js",
     "db:seed": "node --no-warnings=ExperimentalWarning server/scripts/seed.js",
     "smoke": "node --no-warnings=ExperimentalWarning server/scripts/smoke.js",
-    "phase1:smoke": "node --no-warnings=ExperimentalWarning server/scripts/phase1-smoke.js"
+    "phase1:smoke": "node --no-warnings=ExperimentalWarning server/scripts/phase1-smoke.js",
+    "am:smoke": "node --no-warnings=ExperimentalWarning server/scripts/agent-machine-smoke.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.1",
