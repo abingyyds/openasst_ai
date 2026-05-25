@@ -1,0 +1,91 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require 'pathname'
+require 'rexml/document'
+
+require 'CommandManager'
+
+require_relative '../../tm/lib/datastore'
+require_relative '../../tm/lib/tm_action'
+
+TransferManager::Datastore.load_env
+
+vm_xml  = STDIN.read
+
+dir     = ARGV[0].split(':')
+vm_uuid = ARGV[1]
+
+dsrdir = ENV['BACKUP_BASE_PATH']
+vm_dir = if dsrdir
+             Pathname.new("#{dsrdir}/#{File.basename(dir[1])}/backup").cleanpath.to_s
+         else
+             Pathname.new(dir[1]).cleanpath.to_s
+         end
+
+begin
+    xml_data = REXML::Document.new(vm_xml)
+    vm_host  = xml_data.elements['VM/BACKUPS/BACKUP_CONFIG/LAST_BRIDGE']&.text || dir[0]
+
+    # Kill the pre/backup/_live scripts.
+    script = <<~EOS
+        set -x -e -o pipefail; shopt -qs failglob
+        (ps --no-headers -o pid,cmd -C ruby \
+        | awk '$0 ~ "(pre)?backup(_live)? .*#{vm_uuid} " { print $1 } END { print "\\0" }' || :) \\
+        | (read -d '' PIDS
+           [[ -n "$PIDS" ]] || exit 0                           # empty
+           [[ -z "${PIDS//[[:space:][:digit:]]/}" ]] || exit -1 # !integers
+           kill -s TERM $PIDS)
+    EOS
+
+    rc = LocalCommand.run '/bin/bash -s', nil, script
+
+    raise StandardError, "Unable to stop rsync backup actions: #{rc.stderr}" \
+        if rc.code != 0
+
+    # Kill the rsync process. This step is a failsafe in case the TERM signal handler
+    # inside the "backup" action fails to properly cleanup all leftover processes.
+    script = <<~EOS
+        set -x -e -o pipefail; shopt -qs failglob
+        (ps --no-headers -o pid,cmd -C rsync \
+        | awk '$0 ~ "#{vm_dir}" { print $1 } END { print "\\0" }' || :) \\
+        | (read -d '' PIDS
+           [[ -n "$PIDS" ]] || exit 0                           # empty
+           [[ -z "${PIDS//[[:space:][:digit:]]/}" ]] || exit -1 # !integers
+           kill -s TERM $PIDS)
+    EOS
+
+    rc = TransferManager::Action.ssh 'backup_cancel',
+                                     :host     => vm_host,
+                                     :cmds     => script,
+                                     :nostdout => true,
+                                     :nostderr => false
+
+    raise StandardError, "Unable to stop leftover rsync process: #{rc.stderr}" \
+        if rc.code != 0
+rescue StandardError => e
+    STDERR.puts e.full_message
+    exit(-1)
+end
+
+exit(0)

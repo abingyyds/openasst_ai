@@ -1,0 +1,64 @@
+---
+- name: Check hosts connectivity
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for hosts to be up
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+    - name: Wait for hosts to be reachable through SSH
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        state: started
+        timeout: 60
+  tags: always
+
+# ------------------------------------------------------------------------------
+# One-deploy playbooks
+# ------------------------------------------------------------------------------
+- ansible.builtin.import_playbook: opennebula.deploy.pre
+
+- name: Ensure NFS datastore target directories exist
+  hosts: frontend
+  become: true
+  become_user: oneadmin
+  become_method: sudo
+  gather_facts: false
+  tasks:
+    - name: Create datastore target directories on the NFS share
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: 9869
+        group: 9869
+        mode: "0755"
+      loop: "{{ _targets }}"
+      delegate_to: "{{ (groups['frontend']|default([])|first) | default(groups['all']|first) }}"
+      vars:
+        _targets: >-
+          {{
+            ds.config | default({})
+            | dict2items | map(attribute='value') | map('dict2items')
+            | flatten
+            | selectattr('value.symlink.src', 'defined')
+            | map(attribute='value.symlink.src')
+            | list
+          }}
+      when:
+        - ds is defined
+        - ds.mode | default('') == 'generic'
+  tags: always
+
+- ansible.builtin.import_playbook: opennebula.deploy.site
+
+# ------------------------------------------------------------------------------
+# Other playbooks (optional)
+# ------------------------------------------------------------------------------
+# - name: 'Example role'
+#   hosts: all
+#   tasks:
+#     - name: 'Example task'
+#       ansible.builtin.debug:
+#         msg: 'Hello, world!'
+#   tags: always

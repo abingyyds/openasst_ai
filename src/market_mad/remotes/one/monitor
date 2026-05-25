@@ -1,0 +1,352 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+# -------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION'] unless defined?(ONE_LOCATION)
+
+if !ONE_LOCATION
+    LIB_LOCATION      ||= '/usr/lib/one'
+    RUBY_LIB_LOCATION ||= '/usr/lib/one/ruby'
+    GEMS_LOCATION     ||= '/usr/share/one/gems'
+else
+    LIB_LOCATION      ||= ONE_LOCATION + '/lib'
+    RUBY_LIB_LOCATION ||= ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     ||= ONE_LOCATION + '/share/gems'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require 'net/http'
+require 'uri'
+require 'json'
+require 'base64'
+require 'rexml/document'
+require 'securerandom'
+
+# OpenNebula MarketPlace
+class OneMarket
+
+    ONE_MARKET_URL = 'https://marketplace.opennebula.io/'
+    AGENT          = 'Market Driver'
+    VERSION        = File.dirname(__FILE__) + '/../../VERSION'
+    EDITION        = File.dirname(__FILE__) + '/../../EDITION'
+
+    ARM_OS_SECTION = {
+        'ARCH'            => 'aarch64',
+        'FIRMWARE'        => '/usr/share/AAVMF/AAVMF_CODE.fd',
+        'FIRMWARE_SECURE' => 'no',
+        'MACHINE'         => 'virt'
+    }
+
+    def initialize(url)
+        if File.exist?(EDITION)
+            edition = File.read(EDITION).strip
+        else
+            edition = nil
+        end
+
+        @url    = url || ONE_MARKET_URL
+        @url   += '/' unless @url.end_with?('/')
+        version = File.read(VERSION).strip
+
+        if edition && !edition.empty?
+            @agent = "OpenNebula #{version} #{edition} (#{AGENT})"
+        else
+            @agent = "OpenNebula #{version} (#{AGENT})"
+        end
+    end
+
+    def get(path)
+        # Get proxy params (needed for ruby 1.9.3)
+        http_proxy = ENV['http_proxy'] || ENV['HTTP_PROXY']
+
+        if http_proxy
+            # prepend 'http' if missing to parse with URI()
+            http_proxy = 'http://' + http_proxy if http_proxy !~ /^http/
+
+            p_uri   = URI(http_proxy)
+            p_host  = p_uri.host
+            p_port  = p_uri.port
+        else
+            p_host  = nil
+            p_port  = nil
+        end
+
+        uri = URI(@url + path)
+        req = Net::HTTP::Get.new(uri.request_uri)
+
+        req['User-Agent'] = @agent
+
+        response = Net::HTTP.start(uri.hostname, uri.port, p_host, p_port,
+                                   :use_ssl => uri.scheme == 'https') do |http|
+            http.request(req)
+        end
+
+        return 0, response.body if response.is_a? Net::HTTPSuccess
+
+        [response.code.to_i, response.msg]
+    end
+
+    def render_image(tmpl, app)
+        return if app['files'].nil? || app['files'][0].nil?
+
+        file = app['files'][0]
+        size = 0
+
+        size = (file['size'].to_f / (2**20)).ceil if file['size'].to_i != 0
+
+        print_var(tmpl, 'SIZE', size)
+        print_var(tmpl, 'MD5', file['md5'])
+
+        tmpl64 = ''
+        print_var(tmpl64, 'DEV_PREFIX', file['dev_prefix'])
+        print_var(tmpl64, 'TYPE', file['type'])
+
+        if !tmpl64.empty?
+            print_var(tmpl, 'APPTEMPLATE64', Base64.strict_encode64(tmpl64))
+        end
+
+        print_var(tmpl, 'VMTEMPLATE64', generate_vm_template64(app))
+    end
+
+    def render_vmtemplate(tmpl, app)
+        print_var(tmpl, 'SIZE', 0)
+
+        if app['disks']
+            app['disks'].each do |app_name|
+                tmpl << <<-EOT.strip
+                  DISK = [ NAME = "#{SecureRandom.hex[0..9]}",
+                           APP="#{app_name}" ]
+                EOT
+            end
+        end
+
+        print_var(tmpl, 'APPTEMPLATE64', generate_vm_template64(app))
+    end
+
+    def render_service_template(tmpl, app)
+        print_var(tmpl, 'SIZE', 0)
+
+        if app['roles']
+            app['roles'].each do |role_name, app_name|
+                tmpl << <<-EOT.strip
+                  ROLE = [ NAME = "#{role_name}", APP="#{app_name}" ]
+                EOT
+            end
+        end
+
+        ot = app['opennebula_template']
+
+        return if ot.nil? || ot.empty?
+
+        begin
+            print_var(tmpl, 'APPTEMPLATE64', Base64.strict_encode64(ot))
+        rescue StandardError
+            nil
+        end
+    end
+
+    def fetch_appliances
+        rc, body = get('/appliance')
+        if rc != 0
+            return rc, body
+        end
+
+        applist = JSON.parse(body)
+        appstr  = ''
+
+        applist['appliances'].each do |app|
+            id     = app['_id']['$oid']
+            link   = "#{@url}appliance/#{id}"
+            source = "#{link}/download/0"
+            tmpl = ''
+
+            #-------------------------------------------------------------------
+            # Common App attributes
+            #-------------------------------------------------------------------
+            app['type'] = 'IMAGE' unless app['type']
+
+            print_var(tmpl, 'NAME',        app['name'])
+            print_var(tmpl, 'SOURCE',      source)
+            print_var(tmpl, 'IMPORT_ID',   id)
+            print_var(tmpl, 'ORIGIN_ID',   '-1')
+            print_var(tmpl, 'TYPE',        app['type'])
+            print_var(tmpl, 'PUBLISHER',   app['publisher'])
+            print_var(tmpl, 'FORMAT',      app['format'])
+            print_var(tmpl, 'DESCRIPTION', app['short_description'])
+            print_var(tmpl, 'VERSION',     app['version'])
+            print_var(tmpl, 'TAGS', app['tags'].join(', ')) if app['tags']
+
+            print_var(tmpl, 'REGTIME', app['creation_time'])
+            print_var(tmpl, 'LINK',    link)
+            print_var(tmpl, 'ARCHITECTURE', app_arch(app))
+            print_var(tmpl, 'HYPERVISOR', app_hypervisor(app))
+
+            #-------------------------------------------------------------------
+            # Specific App attributes & APPTEMPLATE64
+            #-------------------------------------------------------------------
+
+            case app['type']
+            when 'IMAGE'
+                render_image(tmpl, app)
+            when 'VMTEMPLATE'
+                render_vmtemplate(tmpl, app)
+            when 'SERVICE_TEMPLATE'
+                render_service_template(tmpl, app)
+            else
+                next
+            end
+
+            appstr << "APP=\"#{Base64.strict_encode64(tmpl)}\"\n"
+        end
+
+        appstr
+    end
+
+    private
+
+    def print_var(str, name, val)
+        return if val.nil?
+        return if val.class == String && val.empty?
+
+        val.gsub!('"', '\"') if val.class == String
+
+        str << "#{name}=\"#{val}\"\n"
+    end
+
+    def template_to_str(thash)
+        thash.collect do |key, value|
+            next if value.nil? || value.empty?
+
+            case value
+            when Hash
+                attr = "#{key.to_s.upcase} = [ "
+
+                attr << value.collect do |k, v|
+                    next if v.nil? || v.empty?
+
+                    "#{k.to_s.upcase} =\"#{v}\""
+                end.compact.join(',')
+
+                attr << "]\n"
+            when Array
+                value.collect do |v|
+                    next if v.nil? || v.empty?
+
+                    inner =
+                        if v.is_a?(Hash)
+                            pairs = v.collect do |k2, v2|
+                                next if v2.nil? || v2.empty?
+
+                                "#{k2.to_s.upcase}=\"#{v2}\""
+                            end.compact.join(',')
+                            pairs
+                        else
+                            %("#{v}")
+                        end
+
+                    "#{key.to_s.upcase} = [ #{inner} ]"
+                end.compact.join("\n")
+            when String
+                "#{key.to_s.upcase} = \"#{value}\""
+            end
+        end.compact.join("\n")
+    end
+
+    def generate_vm_template64(app)
+        ot = app['opennebula_template']
+
+        return if ot.nil? || ot.empty?
+
+        begin
+            ot = JSON.parse(ot)
+
+            arch       = app_arch(app)
+            hypervisor = app_hypervisor(app)
+
+            requirements = "HYPERVISOR=#{hypervisor}"
+            requirements << " & ARCH=#{arch}" if ['amd64', 'aarch64'].include? arch
+
+            if ot['SCHED_REQUIREMENTS']
+                ot['SCHED_REQUIREMENTS'] << " & #{requirements}"
+            else
+                ot['SCHED_REQUIREMENTS'] = requirements
+            end
+
+            if arch == 'aarch64'
+                # https://docs.opennebula.io/devel/open_cluster_deployment/kvm_node/kvm_driver.html#arm64-specifics
+                if ot['OS']
+                    ot['OS'].merge!(ARM_OS_SECTION)
+                else
+                    ot['OS'] = ARM_OS_SECTION
+                end
+            end
+
+            ot['HYPERVISOR'] = hypervisor
+
+            template64 = Base64.strict_encode64(template_to_str(ot))
+        rescue StandardError
+            nil
+        end
+
+        return template64
+    end
+
+    def app_hypervisor(app)
+        hypervisor = app['hypervisor']
+
+        return 'kvm' if hypervisor == 'ALL' || hypervisor.nil? || hypervisor.empty?
+
+        hypervisor.downcase
+    end
+
+    def app_arch(app)
+        case app['os-arch']
+        when 'amd64'
+            'x86_64'
+        when 'arm64'
+            'aarch64'
+        when '', nil
+            'all'
+        else
+            app['os-arch']
+        end
+    end
+
+end
+
+################################################################################
+# Main Program. Outpust the list of marketplace appliances
+################################################################################
+
+begin
+    drv_message64 = ARGV[0]
+    drv_message   = Base64.decode64(drv_message64)
+
+    doc = REXML::Document.new(drv_message).root
+
+    url = doc.elements['//MARKETPLACE/TEMPLATE/ENDPOINT'].text rescue nil
+rescue StandardError
+    nil
+end
+
+one_market = OneMarket.new(url)
+puts one_market.fetch_appliances

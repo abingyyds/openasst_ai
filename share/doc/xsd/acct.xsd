@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+  targetNamespace="http://opennebula.org/XMLSchema" xmlns="http://opennebula.org/XMLSchema">
+  <xs:include schemaLocation="shared.xsd"/>
+  <xs:include schemaLocation="vm.xsd"/>
+
+  <xs:element name="HISTORY_RECORDS">
+    <xs:complexType>
+      <xs:sequence maxOccurs="1" minOccurs="1">
+        <xs:element ref="HISTORY" maxOccurs="unbounded" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="HISTORY">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="OID" type="xs:integer"/>
+        <xs:element name="SEQ" type="xs:integer"/>
+        <xs:element name="HOSTNAME" type="xs:string"/>
+        <xs:element name="HID" type="xs:integer"/>
+        <xs:element name="CID" type="xs:integer"/>
+        <xs:element name="STIME" type="xs:integer"/>
+        <xs:element name="ETIME" type="xs:integer"/>
+        <xs:element name="VM_MAD" type="xs:string"/>
+        <xs:element name="TM_MAD" type="xs:string"/>
+        <xs:element name="DS_ID" type="xs:integer"/>
+        <xs:element name="PLAN_ID" type="xs:integer"/>
+        <xs:element name="ACTION_ID" type="xs:integer"/>
+        <xs:element name="PSTIME" type="xs:integer"/>
+        <xs:element name="PETIME" type="xs:integer"/>
+        <xs:element name="RSTIME" type="xs:integer"/>
+        <xs:element name="RETIME" type="xs:integer"/>
+        <xs:element name="ESTIME" type="xs:integer"/>
+        <xs:element name="EETIME" type="xs:integer"/>
+
+        <!-- ACTION values:
+          NONE_ACTION             = 0
+          MIGRATE_ACTION          = 1
+          LIVE_MIGRATE_ACTION     = 2
+          SHUTDOWN_ACTION         = 3
+          SHUTDOWN_HARD_ACTION    = 4
+          UNDEPLOY_ACTION         = 5
+          UNDEPLOY_HARD_ACTION    = 6
+          HOLD_ACTION             = 7
+          RELEASE_ACTION          = 8
+          STOP_ACTION             = 9
+          SUSPEND_ACTION          = 10
+          RESUME_ACTION           = 11
+          BOOT_ACTION             = 12
+          DELETE_ACTION           = 13
+          DELETE_RECREATE_ACTION  = 14
+          REBOOT_ACTION           = 15
+          REBOOT_HARD_ACTION      = 16
+          RESCHED_ACTION          = 17
+          UNRESCHED_ACTION        = 18
+          POWEROFF_ACTION         = 19
+          POWEROFF_HARD_ACTION    = 20
+          DISK_ATTACH_ACTION      = 21
+          DISK_DETACH_ACTION      = 22
+          NIC_ATTACH_ACTION       = 23
+          NIC_DETACH_ACTION       = 24
+          DISK_SNAPSHOT_CREATE_ACTION = 25
+          DISK_SNAPSHOT_DELETE_ACTION = 26
+          TERMINATE_ACTION        = 27
+          TERMINATE_HARD_ACTION   = 28
+          DISK_RESIZE_ACTION      = 29
+          DEPLOY_ACTION           = 30
+          CHOWN_ACTION            = 31
+          CHMOD_ACTION            = 32
+          UPDATECONF_ACTION       = 33
+          RENAME_ACTION           = 34
+          RESIZE_ACTION           = 35
+          UPDATE_ACTION           = 36
+          SNAPSHOT_CREATE_ACTION  = 37
+          SNAPSHOT_DELETE_ACTION  = 38
+          SNAPSHOT_REVERT_ACTION  = 39
+          DISK_SAVEAS_ACTION      = 40
+          DISK_SNAPSHOT_REVERT_ACTION = 41
+          RECOVER_ACTION          = 42
+          RETRY_ACTION            = 43
+          MONITOR_ACTION          = 44
+          DISK_SNAPSHOT_RENAME_ACTION = 45
+        -->
+        <xs:element name="ACTION" type="xs:integer"/>
+        <xs:element name="UID" type="xs:integer"/>
+        <xs:element name="GID" type="xs:integer"/>
+        <xs:element name="REQUEST_ID" type="xs:string"/>
+        <xs:element ref="VM"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

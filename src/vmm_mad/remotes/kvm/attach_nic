@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+    VMDIR             = '/var/lib/one'
+    CONFIG_FILE       = '/var/lib/one/config'
+else
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+    VMDIR             = ONE_LOCATION + '/var'
+    CONFIG_FILE       = ONE_LOCATION + '/var/config'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require_relative 'opennebula_vm'
+require_relative '../lib/command'
+
+include VirtualMachineManagerKVM
+
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+load_remote_env
+
+domain = ARGV[0]
+
+vm = KvmVM.new(STDIN.read)
+
+if vm.pci_attach?
+    pci1    = vm.dumpxml_regexp(domain, "<alias name='pci.1'/>")
+    dev_xml = vm.hostdev_xml(:pci => pci1)
+else
+    dev_xml = vm.interface_xml
+end
+
+script =<<~EOS
+    #{virsh} attach-device #{domain} <(
+    cat <<EOT
+    #{dev_xml}
+    EOT
+    )
+EOS
+
+rc, _out, err = Command.execute('bash -s', false, 0, :stdin_data => script)
+
+if rc != 0
+    STDERR.puts "Could not attach NIC to #{domain}: #{err}"
+    exit(1)
+end
+
+exit 0

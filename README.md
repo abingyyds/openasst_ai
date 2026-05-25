@@ -1,73 +1,66 @@
-# OpenAsstAI
+# [![OpenNebula Logo](https://opennebula.io/wp-content/uploads/2019/04/img-logo-blue.svg)](https://opennebula.io/)
 
-OpenAsstAI 是一个公开的 AI Agent Runtime Marketplace，目标是让用户可以租用长期在线、可配置、可远程管理的 Agent 工作空间。
+## Description
 
-第一阶段不做完整的第三方主机市场，而是先交付一个可内测的官方节点 MVP：
+[OpenNebula](http://opennebula.io) is an open source platform delivering a simple but feature-rich and flexible solution to build and manage enterprise clouds for virtualized services, containerized applications and serverless computing.
 
-- 用户可以在市场中选择官方 Agent 模板。
-- 用户可以创建 Linux Agent 实例。
-- 用户可以在控制台配置 Models、Channels、Skills。
-- 用户可以通过 Web Terminal 进入实例工作空间。
-- 平台可以管理实例生命周期、日志、用量和基础订单。
+[![OpenNebula Architecture](https://opennebula.io/wp-content/uploads/2024/07/03_new_Key-Features.png)](https://opennebula.io/discover/)
 
-## 文档
+### To start using OpenNebula
 
-- [第一阶段目标](./docs/phase-1-goal.md)
-- [第一阶段架构](./docs/phase-1-architecture.md)
-- [第一阶段 Backlog](./docs/phase-1-backlog.md)
+- Explore OpenNebula’s **key features** [on our website](https://opennebula.io/discover).
+- Have a look at our [introductory datasheet](https://support.opennebula.pro/hc/en-us/articles/360036935791-OpenNebula-Key-Features-Datasheet).
+- Browse our catalog of [screencasts and video-tutorials](https://opennebula.io/screencasts/).
+- Download our [technical white papers](https://opennebula.io/docs-whitepapers/).
+- See our [Documentation](https://docs.opennebula.io).
+- Join our [Community Forum](https://forum.opennebula.io).
+- Check our [Quick Start Guide](https://docs.opennebula.io/stable/getting_started/try_opennebula/).
 
-## 第一阶段一句话目标
+[![OpenNebula Intro](https://opennebula.io/wp-content/uploads/2020/08/Intro_Screencast_small.png)](https://opennebula.io/screencast-overview/)
 
-在 6 周内完成一个可内测的官方节点 Agent 租用 MVP，让用户能在 5 分钟内创建一个运行中的 Linux Agent，并通过控制台完成模型、通道、技能和终端管理。
+### Contributing to OpenNebula
 
-## 本地运行
+- Contribute to [Development](https://github.com/OpenNebula/one/wiki/How-to-Contribute-to-Development).
+- Learn about our [Add-on Catalog](https://github.com/OpenNebula/one/wiki/How-to-participate-in-Add_on-Development).
+- Help us [translate OpenNebula](https://www.transifex.com/opennebula/one/) to your language.
+- Report a [security vulnerability](https://github.com/OpenNebula/one/wiki/Vulnerability-Management-Process).
 
-当前仓库已实现第一阶段内测 MVP 的本地版本：市场、登录、实例创建、实例生命周期、Models、Channels、Skills、Web Chat、Web Terminal、Logs、Usage 估算和 Admin Console。
+## Taking OpenNebula for a Test Drive
 
-支付暂不接入；Usage 页面只做运行时长、Token 和费用估算。
+You can quickly and easily try out OpenNebula’s functionality by installing [miniONE](https://github.com/OpenNebula/minione). Then, you can follow [tutorials](https://docs.opennebula.io/stable/quick_start/try_opennebula/opennebula_on-prem_with_minione/) to quickly install an OpenNebula cloud.
 
-```bash
-npm install
-npm run dev
-```
+## Installation
 
-访问：
+For information on installing OpenNebula, please see this [documentation section](https://docs.opennebula.io/stable/software/installation_process/).
 
-- Web：http://127.0.0.1:5173
-- API：http://127.0.0.1:4000
+It is very useful to learn where [log files of the main OpenNebula components are placed](https://docs.opennebula.io/stable/product/operation_references/opennebula_services_configuration/troubleshooting/). Also check the [reference about the main OpenNebula daemon configuration file](https://docs.opennebula.io/stable/product/operation_references/opennebula_services_configuration/oned/).
 
-Demo 账号：
+### Front-end Installation
 
-- 用户：`demo@openasst.ai` / `demo123`
-- 管理员：`admin@openasst.ai` / `admin123`
+The Front-end is the central part of an OpenNebula installation. This is the machine where the server software is installed and where you connect to manage your cloud. It can be a physical node or a virtual instance.
 
-生产环境中需要设置 `BOOTSTRAP_ADMIN_PASSWORD`；`SEED_DEMO_USER` 默认关闭，避免公开部署创建固定密码 Demo 用户。
+Please visit the [official documentation for more details and a step-by-step guide](https://docs.opennebula.io/stable/software/installation_process/manual_installation/overview/). Using the packages provided on our site is the recommended method, to ensure the installation of the latest version and to avoid possible package divergences with different distributions. There are two alternatives here: you can add **our package repositories** to your system, or visit the [software menu](http://opennebula.io/use) to **download the latest package** for your Linux distribution.
 
-## Railway 部署
+If there are no packages for your distribution, please check the [build dependencies](https://docs.opennebula.io/stable/software/installation_process/build_from_source_code/build_deps/) for OpenNebula and head to the [Building from Source Code guide](https://docs.opennebula.io/stable/software/installation_process/build_from_source_code/compile/).
 
-仓库已包含 `railway.json`，Railway 会执行 `npm run build`，启动时执行 `npm run start`，健康检查路径为 `/api/health`。
+### Node Installation
 
-Railway 上建议添加一个 PostgreSQL 服务，并把应用服务连接到它。应用检测到 `DATABASE_URL` 后会自动使用 Postgres；如果没有 `DATABASE_URL`，才会退回本地 SQLite。
+After the OpenNebula Front-end is correctly set up, the next step is preparing the hosts where the VMs are going to run. For details please refer to the installation guides for [KVM Nodes](https://docs.opennebula.io/stable/software/installation_process/manual_installation/kvm_node_installation/) and [LXC Nodes](https://docs.opennebula.io/stable/software/installation_process/manual_installation/lxc_node_installation/).
 
-需要配置的变量：
+## Contact
 
-- `BOOTSTRAP_ADMIN_EMAIL`：管理员邮箱
-- `BOOTSTRAP_ADMIN_PASSWORD`：强密码
-- `JWT_SECRET`：长随机字符串
-- `SECRET_KEY`：32 字节以上随机字符串
-- `PUBLIC_BASE_URL`：Railway 公网域名，例如 `https://你的服务.up.railway.app`
-- `DATABASE_URL`：Railway Postgres 自动提供
-- `DATABASE_SSL=false`：Railway 内网 Postgres 通常不需要 SSL；外部数据库需要 SSL 时改为 `true`
-- `SEED_DEMO_USER=false`：公开生产环境建议关闭
+- [OpenNebula web site](https://opennebula.io).
+- [Development and issue tracking](https://github.com/OpenNebula/one/issues).
+- [Enterprise Services](https://opennebula.io/enterprise).
 
-Volume 仍然建议挂载，但用途改为保存实例工作区和运行时文件。数据库主存储应使用 Postgres，不建议长期依赖 SQLite 文件作为生产主库。
+## License
 
-## 当前 Runtime 说明
+Copyright 2002-2026, OpenNebula Project, OpenNebula Systems (formerly C12G Labs)
 
-本机环境未检测到 Docker，因此第一阶段本地实现使用 `local-sandbox` Runtime：
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 
-- 每个实例有独立工作目录：`runtime/workspaces/<instance_id>`
-- Web Terminal 通过 `node-pty` 连接实例工作目录
-- 本地默认数据存储使用 Node 内置 SQLite：`data/openasstai.sqlite`
-- Railway/生产环境推荐使用 PostgreSQL：设置 `DATABASE_URL`
-- Docker/microVM Runtime 边界已按架构保留，后续可替换沙箱适配器
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+
+## Acknowledgements
+
+Some of the software features included in this repository have been made possible through the funding of the following innovation projects: [ONEnextgen](http://onenextgen.eu/), [ONEedge5G](https://opennebula.io/innovation/oneedge5g/), and [SovereignEdge.Cognit](https://cognit.sovereignedge.eu/).

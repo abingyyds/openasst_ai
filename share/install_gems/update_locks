@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+set -e -o pipefail
+
+if [ "$1" == '--help' ]; then
+    cat - >&2 <<EOF
+Usage: $(basename "$0") [distro1 [distro2 ...]]
+
+SYNOPSIS
+  Regenerates Gemfile.locks for each distribution/version, distribution
+  identificator corresponds to the directory name. When started without
+  any parameter, refreshes all targets. To limit functionality only
+  on specific targets, pass the distribution identificators as arguments
+  on the command line.
+
+  IMPORTANT: Requires working Docker or Podman (with podman-docker wrapper)!
+
+  IMPORTANT: Requires following vars to be exported: RHEL_USER, RHEL_PASSWORD and RHEL_POOL_ID
+  IMPORTANT: Requires following vars to be exported: SUSE_REGCODE and SUSE_EMAIL (for SLE targets)
+
+EXAMPLES
+  $(basename "$0")                       - updates all distributions
+  $(basename "$0") CentOS8 Ubuntu2004    - updates only specified ones
+EOF
+
+    exit 1
+fi
+
+if ! docker image ls &>/dev/null; then
+    echo 'ERROR: Requires working Docker (Podman)' >&2
+    exit 1
+fi
+
+# Whole current repository will be passed into build
+GIT_DIR=$(readlink -f "$(dirname "$0")/../../")
+cd "${GIT_DIR}/share/install_gems/"
+
+# Specify targets as argument or take all
+DIRS=$*
+DIRS=${DIRS:-$(ls -d */)}
+
+for DIR in $DIRS; do
+    TARGET=${DIR%%/}
+    TARGET=${TARGET,,}
+
+    # guess container image and tag
+    DOCKER_IMAGE=${TARGET%%[0-9]*}
+    [[ -e "$DIR/IMAGE" ]] && DOCKER_IMAGE=$(cat "$DIR/IMAGE")
+    DOCKER_TAG=${TARGET##${DOCKER_IMAGE}}
+    [[ -e "$DIR/TAG" ]] && DOCKER_TAG=$(cat "$DIR/TAG")
+
+    case "${DOCKER_IMAGE}" in
+        ubuntu)
+            DOCKER_TAG=$(echo "${DOCKER_TAG}" | sed -e 's/^\([0-9][0-9]\)/\1./')
+            ;;
+    esac
+
+    echo "--- Platform ${TARGET} (${DOCKER_IMAGE}:${DOCKER_TAG})"
+
+    docker run --rm -v "${GIT_DIR}:/git:z" -i "${DOCKER_IMAGE}:${DOCKER_TAG}" bash -s <<EOF
+set -xe -o pipefail
+
+export LC_ALL=C
+
+# install/remove essential packages
+if command -v dpkg >/dev/null; then
+    apt-get update -qq
+    apt-get install -y ruby >/dev/null
+    dpkg -r ruby-bundler
+
+elif command -v zypper >/dev/null; then
+    if [ -x /usr/bin/SUSEConnect ] && [ -n "${SUSE_REGCODE}" ]; then
+        SUSEConnect -r ${SUSE_REGCODE} -e ${SUSE_EMAIL} ||:
+    fi
+
+    zypper -n refresh
+    zypper -n install ruby rubygems findutils openssl
+    rpm -e --nodeps rubygem-bundler ||:
+
+elif command -v rpm >/dev/null; then
+    if grep -m1 '^Red Hat' /etc/redhat-release; then
+      export SMDEV_CONTAINER_OFF=1
+      # TEMP: RHEL servers reset the connection after successfull register
+      subscription-manager register --username ${RHEL_USER} \
+                                    --password ${RHEL_PASSWORD} \
+                                    --force --auto-attach ||:
+      subscription-manager attach --pool=${RHEL_POOL_ID}
+      subscription-manager repos --enable codeready-builder-for-rhel-8-x86_64-rpms ||:
+      subscription-manager repos --enable codeready-builder-for-rhel-9-x86_64-rpms ||:
+    fi
+
+    if command -v dnf >/dev/null; then
+        dnf -q -y --nogpgcheck upgrade almalinux-release ||:
+        dnf -q -y install 'dnf-command(config-manager)'
+        dnf config-manager --set-enabled powertools ||:
+        dnf config-manager --set-enabled crb        ||: # alma9
+    fi
+
+    yum -q -y install rubygems findutils openssl
+    yum -q -y remove  rubygem-bundler
+fi
+
+# install Bundler
+find /usr -name 'bundler*.gemspec' -delete
+export PATH=\$PATH:/usr/local/bin:\$(ruby -e 'puts Gem.bindir')
+
+# use latest compatible bundler
+gem install bundler --no-document --quiet 2>/dev/null || \
+gem install bundler --no-document --quiet --version '2.3.27' 2>/dev/null || \
+gem install bundler --no-document --quiet --version '<2'
+
+# SUSE update-alternatives creates bundler.ruby* instead of bundler
+if ! command -v bundler >/dev/null; then
+    ln -sf \$(ls /usr/bin/bundler.ruby* 2>/dev/null | head -1) /usr/bin/bundler ||:
+    ln -sf \$(ls /usr/bin/bundle.ruby* 2>/dev/null | head -1) /usr/bin/bundle ||:
+fi
+
+# install OpenNebula
+mkdir -p /run/lock
+cd /git
+if ! ./install.sh &>/tmp/install.out; then
+    cat /tmp/install.out
+    exit 1
+fi
+
+# install gems, check version in lock and copy back
+/usr/share/one/install_gems
+
+VERSION=\$(tail -1 /usr/share/one/Gemfile.lock | sed -e 's/\s*//')
+echo "Generated with Bundler version \$VERSION"
+
+mkdir -p /git/share/install_gems/${DIR}/
+\\cp -f /usr/share/one/Gemfile.lock /git/share/install_gems/${DIR}/
+
+# unsubscribe
+subscription-manager remove --all ||:
+SUSEConnect -d ||:
+
+exit 0
+EOF
+
+    echo
+done

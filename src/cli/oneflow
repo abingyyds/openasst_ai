@@ -1,0 +1,553 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+else
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+$LOAD_PATH << RUBY_LIB_LOCATION + '/cli'
+
+require 'json'
+require 'tempfile'
+
+require 'command_parser'
+require 'opennebula/oneflow_client'
+require 'one_helper/oneflow_helper'
+
+USER_AGENT = 'CLI'
+
+# Base Path representing the resource to be used in the requests
+RESOURCE_PATH = '/service'
+
+RESOURCE_DOCUMENT_TYPE = '100'
+
+def check_document_type(response)
+    if CloudClient.is_error?(response)
+        return if response.code == '500' # could be wrong document_type; skip this id
+
+        exit_with_code response.code.to_i, response.to_s
+    else
+        document_type = JSON.parse(response.body)['DOCUMENT']['TYPE']
+        if document_type == RESOURCE_DOCUMENT_TYPE
+            yield
+        end
+    end
+end
+
+CommandParser::CmdParser.new(ARGV) do
+    usage '`oneflow` <command> [<args>] [<options>]'
+    version OpenNebulaHelper::ONE_VERSION
+
+    set :option, Service::DEFAULT_OPTIONS
+    set :option, CommandParser::VERSION
+    set :option, CommandParser::HELP
+
+    ARGS = {
+        :name => 'args',
+        :large => '--args arg1,arg2',
+        :description => 'Schedule action arguments',
+        :format => String
+    }
+
+    DELETE = {
+        :name => 'delete',
+        :large => '--delete',
+        :description => 'Force flow recover delete'
+    }
+
+    APPEND = {
+        :name  => 'append',
+        :large => '--append',
+        :description => 'Append template to the current one'
+    }
+
+    FORMAT = [OpenNebulaHelper::JSON, OpenNebulaHelper::YAML]
+
+    # create helper object
+    helper = OneFlowHelper.new
+
+    ############################################################################
+    # Formatters for arguments
+    ############################################################################
+
+    set :format, :groupid, OpenNebulaHelper.rname_to_id_desc('GROUP') do |arg|
+        OpenNebulaHelper.rname_to_id(arg, 'GROUP')
+    end
+
+    set :format, :userid, OpenNebulaHelper.rname_to_id_desc('USER') do |arg|
+        OpenNebulaHelper.rname_to_id(arg, 'USER')
+    end
+
+    set :format, :service_id, Service.rname_to_id_desc('SERVICE') do |arg|
+        Service.rname_to_id(arg, 'SERVICE')
+    end
+
+    set :format, :service_id_list, Service.list_to_id_desc('SERVICE') do |arg|
+        Service.list_to_id(arg, 'SERVICE')
+    end
+
+    set :format,
+        :vm_action,
+        'Actions supported: #{Role::SCHEDULE_ACTIONS.join(', ')}' do |arg|
+        if Role::SCHEDULE_ACTIONS.include?(arg)
+            [0, arg]
+        else
+            [-1, "Action '#{arg}' is not supported. Supported actions: " \
+                 "#{Role::SCHEDULE_ACTIONS.join(', ')}"]
+        end
+    end
+
+    ###
+
+    list_desc = <<-EOT.unindent
+        List the available services
+    EOT
+
+    command :list, list_desc,
+            :options => FORMAT + CLIHelper::OPTIONS + [OpenNebulaHelper::DESCRIBE] do
+        helper.list_service_pool(helper.client(options), options)
+    end
+
+    ###
+
+    top_desc = <<-EOT.unindent
+        Top the available services
+    EOT
+
+    command :top, top_desc, :options => [CLIHelper::DELAY] do
+        Signal.trap('INT') { exit(-1) }
+
+        helper.top_service_pool(helper.client(options), options)
+
+        0
+    end
+
+    ###
+
+    show_desc = <<-EOT.unindent
+        Show detailed information of a given service
+    EOT
+
+    command :show, show_desc, :service_id, :options => FORMAT do
+        helper.format_resource(helper.client(options), args[0], options)
+    end
+
+    ###
+
+    delete_desc = <<-EOT.unindent
+        Delete a given service
+        To force service removal please use 'oneflow recover --delete <service_id>' command
+    EOT
+
+    command :delete, delete_desc, [:range, :service_id_list] do
+        client = helper.client(options)
+        Service.perform_actions(args[0]) do |service_id|
+            response = client.get("#{RESOURCE_PATH}/#{service_id}")
+            check_document_type response do
+                client.delete("#{RESOURCE_PATH}/#{service_id}")
+            end
+        end
+    end
+
+    ###
+
+    recover_desc = <<-EOT.unindent
+        Recover a failed service, cleaning the failed VMs.
+            From FAILED_DEPLOYING continues deploying the Service
+            From FAILED_SCALING continues scaling the Service
+            From FAILED_UNDEPLOYING continues shutting down the Service
+            From COOLDOWN the Service is set to running ignoring the cooldown
+            From WARNING failed VMs are deleted, and new VMs are instantiated
+    EOT
+
+    command :recover,
+            recover_desc,
+            [:range, :service_id_list],
+            :options => DELETE do
+        client = helper.client(options)
+
+        Service.perform_actions(args[0]) do |service_id|
+            params = {}
+            params['delete'] = options.key?(:delete)
+
+            json = Service.build_json_action('recover', params)
+
+            response = client.get("#{RESOURCE_PATH}/#{service_id}")
+            check_document_type response do
+                client.post("#{RESOURCE_PATH}/#{service_id}/action", json)
+            end
+        end
+    end
+
+    ###
+
+    scale_desc = <<-EOT.unindent
+        Scale a role to the given cardinality
+    EOT
+
+    command :scale,
+            scale_desc,
+            :service_id,
+            :role_name,
+            :cardinality,
+            :options => [Service::FORCE] do
+        if args[2] !~ /^\d+$/
+            STDERR.puts 'Cardinality must be an integer number'
+            exit(-1)
+        end
+
+        json = "{ \"cardinality\" : #{args[2]},\n" \
+               "  \"force\" : #{options[:force] == true}, " \
+               "  \"role_name\" : \"#{args[1]}\"}"
+
+        Service.perform_action(args[0]) do |service_id|
+            helper.client(options).post("#{RESOURCE_PATH}/#{service_id}/scale",
+                                        json)
+        end
+    end
+
+    ###
+
+    chgrp_desc = <<-EOT.unindent
+        Changes the service group
+    EOT
+
+    command :chgrp, chgrp_desc, [:range, :service_id_list], :groupid do
+        client = helper.client(options)
+
+        Service.perform_actions(args[0]) do |service_id|
+            params = {}
+            params['group_id'] = args[1].to_i
+
+            json = Service.build_json_action('chgrp', params)
+
+            client.post("#{RESOURCE_PATH}/#{service_id}/action", json)
+        end
+    end
+
+    ###
+
+    chown_desc = <<-EOT.unindent
+        Changes the service owner and group
+    EOT
+
+    command :chown,
+            chown_desc,
+            [:range, :service_id_list],
+            :userid,
+            [:groupid, nil] do
+        client = helper.client(options)
+
+        Service.perform_actions(args[0]) do |service_id|
+            params = {}
+            params['owner_id'] = args[1]
+            params['group_id'] = args[2] if args[2]
+
+            json = Service.build_json_action('chown', params)
+
+            client.post("#{RESOURCE_PATH}/#{service_id}/action", json)
+        end
+    end
+
+    ###
+
+    chmod_desc = <<-EOT.unindent
+        Changes the service permissions
+    EOT
+
+    command :chmod, chmod_desc, [:range, :service_id_list], :octet do
+        if !/\A\d+\z/.match(args[1])
+            STDERR.puts "Invalid '#{args[1]}' octed permissions"
+            exit(-1)
+        end
+
+        client = helper.client(options)
+
+        Service.perform_actions(args[0]) do |service_id|
+            params = {}
+            params['octet'] = OpenNebulaHelper.to_octet(args[1])
+
+            json = Service.build_json_action('chmod', params)
+
+            client.post("#{RESOURCE_PATH}/#{service_id}/action", json)
+        end
+    end
+
+    ###
+
+    rename_desc = <<-EOT.unindent
+        Renames the Service
+    EOT
+
+    command :rename, rename_desc, :service_id, :name do
+        Service.perform_action(args[0]) do |service_id|
+            params = {}
+            params['name'] = args[1]
+
+            json = Service.build_json_action('rename', params)
+
+            helper.client(options).post("#{RESOURCE_PATH}/#{service_id}/action",
+                                        json)
+        end
+    end
+
+    ###
+
+    action_desc = <<-EOT.unindent
+        Perform an action on all the Virtual Machines of a given role.
+        Actions supported: #{Role::SCHEDULE_ACTIONS.join(',')}
+    EOT
+
+    command :action,
+            action_desc,
+            :service_id,
+            :role_name,
+            :vm_action,
+            :options => [Service::PERIOD, Service::NUMBER, ARGS] do
+        Service.perform_action(args[0]) do |service_id|
+            params = {}
+            params[:period] = options[:period].to_i if options[:period]
+            params[:number] = options[:number].to_i if options[:number]
+            params[:args]   = options[:args] if options[:args]
+
+            json   = Service.build_json_action(args[2], params)
+            client = helper.client(options)
+
+            client.post("#{RESOURCE_PATH}/#{service_id}/role/#{args[1]}/action",
+                        json)
+        end
+    end
+
+    ###
+
+    action_desc = <<-EOT.unindent
+        Perform an action on all the Virtual Machines of a given service.
+        Actions supported: #{Role::SCHEDULE_ACTIONS.join(',')}
+    EOT
+
+    command [:service, :action],
+            action_desc,
+            :service_id,
+            :vm_action,
+            :options => [Service::PERIOD, Service::NUMBER, ARGS] do
+        Service.perform_action(args[0]) do |service_id|
+            params = {}
+            params[:period] = options[:period].to_i if options[:period]
+            params[:number] = options[:number].to_i if options[:number]
+            params[:args]   = options[:args] if options[:args]
+
+            json   = Service.build_json_action(args[1], params)
+            client = helper.client(options)
+
+            client.post("#{RESOURCE_PATH}/#{service_id}/action", json)
+        end
+    end
+
+    ###
+
+    update_desc = <<-EOT.unindent
+        Update the template contents. If a path is not provided the editor will
+        be launched to modify the current content.
+    EOT
+
+    command :update,
+            update_desc,
+            :service_id,
+            [:file, nil],
+            :options => APPEND do
+        service_id = args[0]
+        client     = helper.client(options)
+
+        if args[1]
+            path = args[1]
+        else
+            response = client.get("#{RESOURCE_PATH}/#{service_id}")
+
+            if CloudClient.is_error?(response)
+                exit_with_code response.code.to_i, response.to_s
+            else
+                document = JSON.parse(response.body)['DOCUMENT']
+                template = document['TEMPLATE']['BODY']
+
+                tmp  = Tempfile.new(service_id.to_s)
+                path = tmp.path
+
+                unless options[:append]
+                    tmp.write(JSON.pretty_generate(template))
+                    tmp.flush
+                end
+
+                if ENV['EDITOR']
+                    editor_path = ENV['EDITOR']
+                else
+                    editor_path = OpenNebulaHelper::EDITOR_PATH
+                end
+
+                system("#{editor_path} #{path}")
+
+                unless $CHILD_STATUS.exitstatus.zero?
+                    STDERR.puts 'Editor not defined'
+                    exit(-1)
+                end
+
+                tmp.close
+            end
+        end
+
+        if options[:append]
+            req             = {}
+            req['append']   = true
+            req['template'] = File.read(path)
+
+            response = client.put("#{RESOURCE_PATH}/#{service_id}",
+                                  req.to_json)
+        else
+            response = client.put("#{RESOURCE_PATH}/#{service_id}",
+                                  File.read(path))
+        end
+
+        if CloudClient.is_error?(response)
+            [response.code.to_i, response.to_s]
+        else
+            0
+        end
+    end
+
+    ###
+
+    purge_done_desc = <<-EOT.unindent
+        Purge and delete services in DONE state
+    EOT
+
+    command :'purge-done', purge_done_desc do
+        client   = helper.client(options)
+        response = client.post('/service_pool/purge_done', '')
+
+        if CloudClient.is_error?(response)
+            exit_with_code response.code.to_i, response.to_s
+        else
+            0
+        end
+    end
+
+    ###
+
+    add_role_desc = <<-EOT.unindent
+        Add new role to running service
+    EOT
+
+    command :'add-role', add_role_desc, :service_id, [:file, nil] do
+        service_id = args[0]
+        client     = helper.client(options)
+
+        if args[1]
+            path = args[1]
+        else
+            tmp  = Tempfile.new(service_id.to_s)
+            path = tmp.path
+
+            if ENV['EDITOR']
+                editor_path = ENV['EDITOR']
+            else
+                editor_path = OpenNebulaHelper::EDITOR_PATH
+            end
+
+            system("#{editor_path} #{path}")
+
+            unless $CHILD_STATUS.exitstatus.zero?
+                STDERR.puts 'Editor not defined'
+                exit(-1)
+            end
+
+            tmp.close
+        end
+
+        params        = {}
+        params[:role] = File.read(path)
+        params[:add]  = true
+        json          = Service.build_json_action('add_role', params)
+
+        response = client.post("#{RESOURCE_PATH}/#{service_id}/role_action",
+                               json)
+
+        if CloudClient.is_error?(response)
+            [response.code.to_i, response.to_s]
+        else
+            0
+        end
+    end
+
+    ###
+
+    remove_role_desc = <<-EOT.unindent
+        Remove role from running service
+    EOT
+
+    command :'remove-role', remove_role_desc, :service_id, :role_name do
+        service_id = args[0]
+        client     = helper.client(options)
+
+        params        = {}
+        params[:role] = args[1]
+        params[:add]  = false
+        json          = Service.build_json_action('remove_role', params)
+
+        response = client.post("#{RESOURCE_PATH}/#{service_id}/role_action",
+                               json)
+
+        if CloudClient.is_error?(response)
+            [response.code.to_i, response.to_s]
+        else
+            0
+        end
+    end
+
+    ###
+
+    release_desc = <<-EOT.unindent
+        Release roles of a service on hold
+    EOT
+
+    command :release, release_desc, :service_id do
+        service_id = args[0]
+        client     = helper.client(options)
+
+        params        = {}
+        json          = Service.build_json_action('release', params)
+
+        response = client.post("#{RESOURCE_PATH}/#{service_id}/action",
+                               json)
+
+        if CloudClient.is_error?(response)
+            [response.code.to_i, response.to_s]
+        else
+            0
+        end
+    end
+end

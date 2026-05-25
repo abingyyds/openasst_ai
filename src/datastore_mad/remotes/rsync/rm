@@ -1,0 +1,93 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+    VMDIR             = '/var/lib/one'
+    CONFIG_FILE       = '/var/lib/one/config'
+else
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+    VMDIR             = ONE_LOCATION + '/var'
+    CONFIG_FILE       = ONE_LOCATION + '/var/config'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require 'base64'
+require 'pathname'
+require 'rexml/document'
+
+require_relative '../../tm/lib/backup'
+require_relative '../../tm/lib/tm_action'
+
+daction64 = STDIN.read
+
+# Parse input data.
+
+begin
+    action = Base64.decode64 daction64
+
+    image = TransferManager::BackupImage.new action
+
+    xml = REXML::Document.new(action).root
+
+    base_path  = xml.elements['DATASTORE/BASE_PATH'].text
+    rsync_user = xml.elements['DATASTORE/TEMPLATE/RSYNC_USER']&.text || 'oneadmin'
+    rsync_host = xml.elements['DATASTORE/TEMPLATE/RSYNC_HOST'].text
+rescue StandardError => e
+    STDERR.puts e.full_message
+    exit(-1)
+end
+
+begin
+    script = [<<~EOS]
+        set -e -o pipefail; shopt -qs failglob
+    EOS
+
+    snap_dirs = image.snapshots.map do |snap|
+        raw     = %(#{base_path}/#{image.vm_id}/#{snap}/)
+        cleaned = Pathname.new(raw).cleanpath.to_s
+        quoted  = %('#{cleaned}/')
+        quoted
+    end
+
+    raise StandardError, 'Nothing to remove' if snap_dirs.empty?
+
+    script << %(rm -rf #{snap_dirs.join(' ')})
+
+    rc = TransferManager::Action.ssh 'remove_snapshots',
+                                     :host     => "#{rsync_user}@#{rsync_host}",
+                                     :forward  => true,
+                                     :cmds     => script.join("\n"),
+                                     :nostdout => false,
+                                     :nostderr => false
+
+    raise StandardError, "Unable to remove snapshots: #{rc.stderr}" if rc.code != 0
+rescue StandardError => e
+    STDERR.puts e.full_message
+    exit(-1)
+end
+
+exit(0)

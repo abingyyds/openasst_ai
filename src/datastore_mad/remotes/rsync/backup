@@ -1,0 +1,186 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require 'pathname'
+require 'rexml/document'
+require 'securerandom'
+
+require_relative '../../tm/lib/datastore'
+require_relative '../../tm/lib/tm_action'
+
+# BACKUP host:remote_dir DISK_ID:..:DISK_ID vm_uuid bj_id vm_id ds_id
+
+TransferManager::Datastore.load_env
+
+xml = STDIN.read
+
+dir      = ARGV[0].split(':')
+_disks   = ARGV[1].split(':')
+_vm_uuid = ARGV[2]
+_bj_id   = ARGV[3]
+vm_id    = ARGV[4]
+_ds_id   = ARGV[5]
+
+dsrdir = ENV['BACKUP_BASE_PATH']
+vm_dir = if dsrdir
+             Pathname.new("#{dsrdir}/#{vm_id}/backup").cleanpath.to_s
+         else
+             Pathname.new("#{dir[1]}/backup").cleanpath.to_s
+         end
+
+begin
+    doc     = REXML::Document.new(xml)
+    ds_xml  = doc.root.elements['DATASTORE']
+    vm_xml  = doc.root.elements['VM']
+
+    rsync_user = ds_xml.elements['TEMPLATE/RSYNC_USER'].text
+    rsync_host = ds_xml.elements['TEMPLATE/RSYNC_HOST'].text
+
+    base = ds_xml.elements['BASE_PATH'].text
+
+    if ds_xml.elements['TEMPLATE/RSYNC_ARGS'].nil?
+        args = '-aS'
+    else
+        args = ds_xml.elements['TEMPLATE/RSYNC_ARGS'].text
+    end
+
+    ds = TransferManager::Datastore.from_xml(:ds_xml => ds_xml.to_s)
+
+    bridge_host = vm_xml.elements['BACKUPS/BACKUP_CONFIG/LAST_BRIDGE']&.text
+    vm_host     = bridge_host || dir[0]
+rescue StandardError => e
+    STDERR.puts e.message
+    exit(-1)
+end
+
+path = Pathname.new(base).cleanpath.to_s
+
+backup_id   = SecureRandom.hex[0, 6].to_s
+backup_path = "#{path}/#{vm_id}/#{backup_id}/"
+
+#-------------------------------------------------------------------------------
+# Install cleanup handler (triggered by backup_cancel action).
+#   1. [rsync server] delete backup path recursively
+#-------------------------------------------------------------------------------
+pipe_r, pipe_w = IO.pipe
+
+Thread.new do
+    loop do
+        rs, _ws, _es = IO.select([pipe_r])
+        break if rs[0] == pipe_r
+    end
+
+    # Kill the rsync process.
+    script = <<~EOS
+        set -x -e -o pipefail; shopt -qs failglob
+        (ps --no-headers -o pid,cmd -C rsync \
+        | awk '$0 ~ "#{vm_dir}" { print $1 } END { print "\\0" }' || :) \\
+        | (read -d '' PIDS
+           [[ -n "$PIDS" ]] || exit 0                           # empty
+           [[ -z "${PIDS//[[:space:][:digit:]]/}" ]] || exit -1 # !integers
+           kill -s TERM $PIDS)
+    EOS
+
+    rc = TransferManager::Action.ssh 'backup_cancel',
+                                     :host     => vm_host,
+                                     :cmds     => script,
+                                     :nostdout => true,
+                                     :nostderr => false
+
+    if rc.code != 0
+        STDERR.puts "Unable to stop rsync process: #{rc.stderr}"
+        exit(-1)
+    end
+
+    rc = TransferManager::Action.ssh 'purge_dst_path',
+                                     :host     => "#{rsync_user}@#{rsync_host}",
+                                     :cmds     => "rm -rf #{backup_path}",
+                                     :nostdout => true,
+                                     :nostderr => false
+
+    if rc.code != 0
+        STDERR.puts "Error purging rsync dst path: #{rc.stderr}"
+        exit(-1)
+    end
+
+    STDERR.puts "Backup cancelled: #{backup_id}"
+    STDERR.flush
+
+    # Suppress "`read': stream closed in another thread (IOError)".
+    STDOUT.reopen IO::NULL
+    STDERR.reopen IO::NULL
+
+    exit(-1) # fail anyway
+end
+
+Signal.trap(:TERM) do
+    pipe_w.write 'W'
+end
+
+#-------------------------------------------------------------------------------
+# Rsync backup files to server:
+#   1. [rsync server] make backup path
+#   2. [host] Compute backup total size & rsync files
+#-------------------------------------------------------------------------------
+rc = TransferManager::Action.ssh 'make_dst_path',
+                                 :host     => "#{rsync_user}@#{rsync_host}",
+                                 :cmds     => "mkdir -p #{backup_path}",
+                                 :nostdout => true,
+                                 :nostderr => false
+
+if rc.code != 0
+    STDERR.puts "Error making rsync dst path: #{rc.stderr}"
+    exit(-1)
+end
+
+cmd = "rsync #{args} #{vm_dir}/ #{rsync_user}@#{rsync_host}:#{backup_path}"
+
+script = <<~EOS
+    set -ex -o pipefail
+
+    BKSIZE=`du -sm #{vm_dir}`
+    BKNAME=$(ls #{vm_dir}/disk.* | head -n 1)
+    #{ds.cmd_confinement(cmd, vm_dir, ['SSH_AUTH_SOCK'])} > /dev/null
+    echo "$BKSIZE $BKNAME"
+EOS
+
+rc = TransferManager::Action.ssh 'backup',
+                                 :host     => vm_host,
+                                 :cmds     => script,
+                                 :forward  => true,
+                                 :nostdout => false,
+                                 :nostderr => false
+
+if rc.code != 0 || rc.stdout.empty?
+    STDERR.puts "Error copying backup: #{rc.stderr}"
+    exit(-1)
+end
+
+stdout_parts = rc.stdout.split(' ')
+
+disk_filepath = stdout_parts[2]
+extension     = File.extname(disk_filepath).delete_prefix('.')
+backup_format = ['rbd2', 'rbdiff'].include?(extension) ? 'rbd' : 'raw'
+
+STDOUT.puts "#{backup_id} #{rc.stdout.lines.last.split[0]} #{backup_format}"
+exit(0)

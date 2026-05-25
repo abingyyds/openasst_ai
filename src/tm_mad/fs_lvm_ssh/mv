@@ -1,0 +1,232 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# MV <hostA:system_ds/disk.i|hostB:system_ds/disk.i> vmid dsid
+#    <hostA:system_ds/|hostB:system_ds/>
+#   - hostX is the target host to deploy the VM
+#   - system_ds is the path for the system datastore in the host
+#   - vmid is the id of the VM
+#   - dsid is the target datastore (0 is the system datastore)
+
+SRC=$1
+DST=$2
+
+VMID=$3
+DSID=$4
+
+#--------------------------------------------------------------------------------
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+    LIB_LOCATION=/usr/lib/one
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+DRIVER_PATH=$(dirname $0)
+
+source ${DRIVER_PATH}/../../etc/tm/fs_lvm/fs_lvm.conf
+
+. $TMCOMMON
+
+#--------------------------------------------------------------------------------
+
+SRC=$(fix_dir_slashes "$SRC")
+DST=$(fix_dir_slashes "$DST")
+
+SRC_PATH=$(arg_path "$SRC")
+DST_PATH=$(arg_path "$DST")
+
+SRC_HOST=$(arg_host "$SRC")
+DST_HOST=$(arg_host "$DST")
+
+SRC_DIR=$(dirname "$SRC_PATH")
+DST_DIR=$(dirname "$DST_PATH")
+
+#-------------------------------------------------------------------------------
+# Get Image information
+#-------------------------------------------------------------------------------
+
+DISK_ID=$(basename ${DST_PATH} | cut -d. -f2)
+
+XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+unset i j XPATH_ELEMENTS
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/LVM_THIN_ENABLE)
+
+LVM_THIN_ENABLE="${XPATH_ELEMENTS[j++],,}"
+
+# Activate the disk in the target host
+if [ "$(is_disk "$SRC_PATH")" -eq 1 ]; then
+    #---------------------------------------------------------------------------
+    # Get Image information
+    #---------------------------------------------------------------------------
+
+    SRC_DS_SYS_ID=$(echo "$SRC_DIR" | $AWK -F '/' '{print $(NF-1)}')
+    DST_DS_SYS_ID=$(echo "$DST_DIR" | $AWK -F '/' '{print $(NF-1)}')
+
+    DISK_ID=${SRC_PATH##*.}
+
+    LCM_STATE=$(lcm_state "$VMID")
+
+    POOL_NAME="lv-one-$VMID-pool"
+    LV_NAME="lv-one-${VMID}-${DISK_ID}"
+    SRC_VG_NAME="vg-one-${SRC_DS_SYS_ID}"
+    SRC_DEV="/dev/${SRC_VG_NAME}/${LV_NAME}"
+    DST_VG_NAME="vg-one-${DST_DS_SYS_ID}"
+    DST_DEV="/dev/${DST_VG_NAME}/${LV_NAME}"
+
+    # skip deactivate for `onevm resume` (after stop or undeploy)
+    # 9(49)  = PROLOG_RESUME(+FAILURE)
+    # 31(50) = PROLOG_UNDEPLOY(+FAILURE)
+    # 60(61) = PROLOG_MIGRATE_UNKNOWN(+FAILURE)
+    if ! [[ "$LCM_STATE" =~ ^(9|31|49|50|60|61)$ ]]; then
+        # deactivate
+        CMD=$(cat <<EOF
+            set -ex -o pipefail
+            if [ -b "${SRC_DEV}" ]; then
+              ${SYNC}
+              ${SUDO} ${LVSCAN}
+              ${SUDO} ${LVCHANGE} -an "${SRC_DEV}"
+
+              # Deactivate src pool if it does not have any more LVs
+              if [ -n "\$($SUDO $LVS --noheading -S 'vg_name = $SRC_VG_NAME && lv_name = $POOL_NAME')" ] &&
+                 [ -z "\$($SUDO $LVS --noheading -S 'vg_name = $SRC_VG_NAME && pool_lv = $POOL_NAME')" ]; then
+                  $SUDO $LVCHANGE -an "$SRC_VG_NAME/${POOL_NAME}"
+                  $SUDO $LVCHANGE -an "$SRC_VG_NAME/${POOL_NAME}_tmeta" || true
+                  $SUDO $LVCHANGE -an "$SRC_VG_NAME/${POOL_NAME}_tdata" || true
+              fi
+
+            fi
+
+            rm -f "${SRC_DIR}/.host" || :
+EOF
+)
+        LOCK="tm-fs_lvm-${SRC_DS_SYS_ID}.lock"
+        exclusive "${LOCK}" 120 ssh_exec_and_log "${SRC_HOST}" "${CMD}" \
+            "Error deactivating disk ${SRC_PATH}"
+    fi
+
+    # for `onevm stop` or `onevm undeploy` nothing to do
+    # 10(41) = EPILOG_STOP(+FAILURE)
+    # 30(42) = EPILOG_UNDEPLOY(+FAILURE)
+    if [[ "$LCM_STATE" =~ ^(10|30|41|42)$ ]]; then
+        # After managing LV deactivation on hosts, transfer normal files
+        "$(dirname "$0")"/../ssh/mv "$@"
+        exit 0
+    fi
+
+    # copy volume between datastores
+    if [ "${SRC_PATH}" != "${DST_PATH}" ]; then
+        # create new volume (on DST) (FIXME almost same code as in clone; unify it during Ruby rewrite)
+        CREATE_CMD=$(cat <<EOF
+            set -e -o pipefail
+            ${SYNC}
+            ${SUDO} ${LVSCAN}
+            SIZE=\$(${SUDO} ${LVS} --noheadings --units B -o lv_size "${SRC_DEV}" | tr -d '[:blank:]')
+
+            if [ "$LVM_THIN_ENABLE" = 'yes' ]; then
+                # If pool exists, extend it for the new disk. Otherwise, create it.
+                if [ -n "\$($SUDO $LVS --noheading -S "vg_name = $DST_VG_NAME && lv_name = $POOL_NAME")" ]; then
+                    $SUDO $LVEXTEND -L +\${SIZE}M $DST_VG_NAME/$POOL_NAME
+                else
+                    # -ky is to enable activation skip, preventing possible data corruption for
+                    # example in HA situations
+                    # -Zy is for auto-zeroing thin volumes. It already defaults to 'y' but just in case...
+                    $SUDO $LVCREATE -ky -Zy -L \${SIZE}M --type thin-pool --thinpool $POOL_NAME $DST_VG_NAME
+                    $SUDO $LVCHANGE -an $DST_VG_NAME/$POOL_NAME
+                fi
+                $SUDO $LVCREATE -ky --thin $DST_VG_NAME/$POOL_NAME -V \${SIZE}M -n $LV_NAME
+                $SUDO $LVCHANGE -ay -K $DST_VG_NAME/$LV_NAME
+            else
+                ${SUDO} ${LVCREATE} --wipesignatures n -L"\${SIZE}" -n "${LV_NAME}" "${DST_VG_NAME}"
+            fi
+
+            # Temporally enable source LV to copy from it
+            ${SUDO} ${LVCHANGE} -ay -K '${SRC_VG_NAME}/${LV_NAME}'
+            ${DD} if=${SRC_DEV} of=${DST_DEV} bs=${DD_BLOCK_SIZE:-64k} conv=sparse,fdatasync
+            ${SUDO} ${LVCHANGE} -an '${SRC_VG_NAME}/${LV_NAME}'
+
+            ${SYNC}
+EOF
+)
+
+        LOCK="tm-fs_lvm-${DST_DS_SYS_ID}.lock"
+        exclusive "${LOCK}" 120 ssh_exec_and_log "${DST_HOST}" "${CREATE_CMD}" \
+                "Error copying LV contents from ${SRC_VG_NAME}/${LV_NAME} to ${DST_VG_NAME}/${LV_NAME}"
+
+        # delete old volume and update device symlinks (on DST)
+        DELETE_CMD=$(cat <<EOF
+            set -e -o pipefail
+            ${SYNC}
+            ${SUDO} ${LVSCAN}
+            ${SUDO} ${LVREMOVE} -y ${SRC_DEV}
+            # Remove src pool if it does not have any more LVs
+            if [ -n "\$($SUDO $LVS --noheading -S 'vg_name = $SRC_VG_NAME && lv_name = $POOL_NAME')" ] &&
+               [ -z "\$($SUDO $LVS --noheading -S 'vg_name = $SRC_VG_NAME && pool_lv = $POOL_NAME')" ]; then
+                $SUDO $LVREMOVE -y '$SRC_VG_NAME/$POOL_NAME'
+            fi
+            ${SYNC}
+
+            rm -f "${SRC_PATH}"
+            ln -s "${DST_DEV}" "${SRC_PATH}"
+EOF
+)
+
+        LOCK="tm-fs_lvm-${SRC_DS_SYS_ID}.lock"
+        exclusive "${LOCK}" 120 ssh_exec_and_log "${SRC_HOST}" "${DELETE_CMD}" \
+            "Error deleting old LV ${SRC_DEV}"
+    else
+        # activate
+        CMD=$(cat <<EOF
+            set -ex -o pipefail
+            ${SYNC}
+            ${SUDO} ${LVSCAN}
+            ${SUDO} ${LVCHANGE} -ay -K "${DST_DEV}"
+            ${SYNC}
+
+            mkdir -p "${DST_DIR}"
+            hostname -f >"${DST_DIR}/.host" || :
+EOF
+)
+        ssh_exec_and_log "$DST_HOST" "$CMD" \
+            "Error activating disk $DST_PATH"
+    fi
+
+    # In FT mode, we don't have access to source host and ssh/mv does nothing. Create symbolic
+    # link manually in that case.
+    # 60(61) = PROLOG_MIGRATE_UNKNOWN(+FAILURE)
+    if [[ "$LCM_STATE" =~ ^(60|61)$ ]]; then
+        SYMLINK_CMD=$(cat <<EOF
+            mkdir -p "${DST_DIR}"
+            ln -s "${DST_DEV}" "${DST_PATH}"
+EOF
+)
+
+        LOCK="tm-fs_lvm-${DST_DS_SYS_ID}.lock"
+        exclusive "${LOCK}" 120 ssh_exec_and_log "${DST_HOST}" "${SYMLINK_CMD}" \
+                "Error creating symlink ${DST_PATH} -> ${DST_DEV}"
+
+    fi
+fi
+
+# After managing LV de/activation on different hosts, transfer normal files
+"$(dirname "$0")"/../ssh/mv "$@"

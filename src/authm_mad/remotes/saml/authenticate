@@ -1,0 +1,135 @@
+#!/usr/bin/env ruby
+
+# ---------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                  #
+#                                                                              #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may      #
+# not use this file except in compliance with the License. You may obtain      #
+# a copy of the License at                                                     #
+#                                                                              #
+# http://www.apache.org/licenses/LICENSE-2.0                                   #
+#                                                                              #
+# Unless required by applicable law or agreed to in writing, software          #
+# distributed under the License is distributed on an "AS IS" BASIS,            #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.     #
+# See the License for the specific language governing permissions and          #
+# limitations under the License.                                               #
+# ---------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+    ETC_LOCATION      = '/etc/one/'
+else
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+    ETC_LOCATION      = ONE_LOCATION + '/etc/'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require 'yaml'
+require 'base64'
+require 'opennebula/saml_auth'
+require 'uri'
+require 'timeout'
+require 'rexml/document'
+require 'opennebula/error'
+require 'opennebula/xml_utils'
+require 'onelogin/ruby-saml'
+
+DEV_DEBUG = false
+
+if defined?(URI::Parser)
+    URI_PARSER=URI::Parser.new
+else
+    URI_PARSER=URI
+end
+
+begin
+    # Initialize XML construct
+    error_msg = 'Invalid XML input'
+
+    xml = OpenNebula::XMLElement.new
+    xml.initialize_xml(STDIN.read, 'AUTHN')
+
+    user   = URI_PARSER.unescape(xml['/AUTHN/USERNAME'])
+    secret = xml['/AUTHN/SECRET']
+
+    # Load SAML assertion and retrieve issuer
+    error_msg = 'Unable to parse SAML assertion'
+
+    assertion_text = Base64.decode64(secret)
+    assertion      = Nokogiri::XML(assertion_text)
+
+    namespaces = {
+        'saml' => 'urn:oasis:names:tc:SAML:2.0:assertion'
+    }
+
+    issuer = assertion.at_xpath('//saml:Issuer', namespaces).text
+
+    # Load configuration file
+    error_msg = 'Unable to read /etc/one/auth/saml_auth.conf.' \
+        ' Check that it exists and can be read by oneadmin'
+
+    options = YAML.load_file(ETC_LOCATION+'/auth/saml_auth.conf')
+
+    # Check if the assertion is emitted by a trusted (configured) IDP
+    error_msg = 'Error checking if the assertion issuer is trusted'
+
+    provider = nil
+
+    options[:identity_providers].each do |_, idp_data|
+        if idp_data[:issuer] == issuer
+            provider = idp_data
+            break
+        end
+    end
+
+    if provider.nil?
+        STDERR.puts 'SAML assertion not produced by a trusted Identity Provider.'
+        STDERR.puts 'Review the list of trusted Identity Providers in /etc/one/auth/saml_auth.conf'
+        exit(-1)
+    end
+
+    # Load provider config. Triggers mapping file autogenerate/refresh/load
+    error_msg = 'Error loading Identity Provider configuration or autogenerating mapping file'
+
+    saml = OpenNebula::SamlAuth.new(provider, options)
+
+    # Validate the assertion
+    error_msg = 'Error validating SAML assertion'
+
+    errors = saml.validate_assertion(assertion_text)
+
+    if errors
+        STDERR.puts('SAML Assertion rejected. Reasons:')
+        errors.each do |reason|
+            STDERR.puts('- ' + reason)
+        end
+        exit(-1)
+    end
+
+    # Group mapping logic
+    error_msg = 'Error mapping received groups to OpenNebula groups'
+
+    xpath_request = "//saml:Attribute[@Name='#{provider[:group_field]}']/saml:AttributeValue"
+    idp_groups    = assertion.xpath(xpath_request, namespaces).map(&:text)
+
+    saml.validate_required_group(idp_groups)
+
+    one_groups = saml.get_groups(idp_groups)
+rescue StandardError => e
+    STDERR.puts "#{error_msg}: #{e.message}"
+    STDERR.puts "error: #{e}" if DEV_DEBUG
+    exit(-1)
+end
+
+# Using base64-encoded issuer URL as a password placeholder for new users
+puts("saml #{user} #{Base64.strict_encode64(issuer)} #{one_groups}")

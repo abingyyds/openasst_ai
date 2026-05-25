@@ -1,0 +1,157 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+    LOG_LOCATION      = '/var/log/one'
+else
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+    LOG_LOCATION      = ONE_LOCATION + '/var'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+$LOAD_PATH << RUBY_LIB_LOCATION + '/cli'
+
+# Default pager to check logs
+DEFAULT_PAGER = 'less'
+
+# List of OpenNebula services and the logs files
+SERVICES = {
+    'fireedge' => { :log => 'fireedge.log', :error => 'fireedge.error' },
+    'monitor'  => { :log => 'monitor.log' },
+    'oned'     => { :log => 'oned.log' },
+    'onehem'   => { :log => 'onehem.log', :error => 'onehem.error' },
+    'sched'    => { :log => 'sched.log' }
+}
+
+require 'command_parser'
+require 'one_helper'
+
+CommandParser::CmdParser.new(ARGV) do
+    usage '`onelog` <command> [<args>] [<options>]'
+    version OpenNebulaHelper::ONE_VERSION
+
+    TYPE = {
+        :name => 'type',
+        :short => '-t type',
+        :large => '--type type',
+        :format => String,
+        :description => 'Log type (log/error) [default: log]'
+    }
+
+    PAGER = {
+        :name => 'pager',
+        :short => '-p pager',
+        :large => '--pager pager',
+        :format => String,
+        :description => 'Pager to use to read logs [defaul: less]'
+    }
+
+    PAGER_OPTS = {
+        :name => 'pager_opts',
+        :large => '--pager-opts pager_opts',
+        :format => String,
+        :description => 'Pager options'
+    }
+
+    get_desc = <<-EOT.unindent
+        Gets log from an specific OpenNebula service
+    EOT
+
+    command :get, get_desc, :service, :options => [TYPE, PAGER, PAGER_OPTS] do
+        logs  = SERVICES[args[0]]
+        pager = options[:pager] || DEFAULT_PAGER
+
+        unless logs
+            STDERR.puts "Service '#{args[0]}' not found"
+            exit 1
+        end
+
+        if options[:type] && !logs[options[:type].to_sym]
+            STDERR.puts "Log file type '#{options[:type]}' not found"
+            exit 1
+        end
+
+        options[:type].nil? ? f = logs[:log] : f = logs[options[:type].to_sym]
+
+        system("#{pager} #{options[:pager_opts]} #{LOG_LOCATION}/#{f}")
+    end
+
+    vm_desc = <<-EOT.unindent
+        Gets VM log
+    EOT
+
+    command :'get-vm', vm_desc, :id, :options => [PAGER, PAGER_OPTS] do
+        pager = options[:pager] || DEFAULT_PAGER
+
+        begin
+            Integer(args[0])
+
+            if !ONE_LOCATION
+                file = "#{LOG_LOCATION}/#{args[0]}.log"
+            else
+                file = "#{LOG_LOCATION}/vms/#{args[0]}/vm.log"
+            end
+
+            unless File.exist?(file)
+                STDERR.puts "No LOG file found for '#{args[0]}' VM"
+                exit 1
+            end
+
+            system("#{pager} #{options[:pager_opts]} #{file}")
+        rescue StandardError
+            STDERR.puts 'Only ID is supported'
+            exit 1
+        end
+    end
+
+    service_desc = <<-EOT.unindent
+        Gets Service log
+    EOT
+
+    command :'get-service',
+            service_desc,
+            :id,
+            :options => [PAGER, PAGER_OPTS] do
+        pager = options[:pager] || DEFAULT_PAGER
+
+        begin
+            Integer(args[0])
+
+            file = "#{LOG_LOCATION}/oneflow/#{args[0]}.log"
+
+            unless File.exist?(file)
+                STDERR.puts "No LOG file found for '#{args[0]}' service"
+                exit 1
+            end
+
+            system("#{pager} #{options[:pager_opts]} #{file}")
+        rescue StandardError
+            STDERR.puts 'Only ID is supported'
+            exit 1
+        end
+    end
+end

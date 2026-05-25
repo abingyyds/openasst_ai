@@ -1,0 +1,56 @@
+/* ------------------------------------------------------------------------- *
+ * Copyright 2002-2026, OpenNebula Project, OpenNebula Systems               *
+ *                                                                           *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may   *
+ * not use this file except in compliance with the License. You may obtain   *
+ * a copy of the License at                                                  *
+ *                                                                           *
+ * http://www.apache.org/licenses/LICENSE-2.0                                *
+ *                                                                           *
+ * Unless required by applicable law or agreed to in writing, software       *
+ * distributed under the License is distributed on an "AS IS" BASIS,         *
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  *
+ * See the License for the specific language governing permissions and       *
+ * limitations under the License.                                            *
+ * ------------------------------------------------------------------------- */
+import { STYLE_BUTTONS, T } from '@ConstantsModule'
+import { css } from '@emotion/css'
+import { AuthAPI } from '@FeaturesModule'
+import { SubmitButton } from '@ComponentsModule'
+import { Box, useTheme } from '@mui/material'
+import { LogOut as LogOutIcon } from 'iconoir-react'
+import { memo, useMemo } from 'react'
+
+const styles = ({ typography }) => ({
+  root: css({
+    padding: typography.pxToRem(16),
+    display: 'inline-flex',
+    '& > button': {
+      width: '100%',
+    },
+  }),
+})
+
+const LogOut = memo(() => {
+  const theme = useTheme()
+  const classes = useMemo(() => styles(theme), [theme])
+  const [logout] = AuthAPI.useLogoutMutation()
+
+  return (
+    <Box className={classes.root}>
+      <SubmitButton
+        onClick={() => logout()}
+        importance={STYLE_BUTTONS.IMPORTANCE.SECONDARY}
+        size={STYLE_BUTTONS.SIZE.MEDIUM}
+        type={STYLE_BUTTONS.TYPE.OUTLINED}
+        label={T.SignOut}
+        data-cy="logout-button"
+        icon={<LogOutIcon />}
+      />
+    </Box>
+  )
+})
+
+LogOut.displayName = 'LogOut'
+
+export default LogOut

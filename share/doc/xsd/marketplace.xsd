@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+  targetNamespace="http://opennebula.org/XMLSchema" xmlns="http://opennebula.org/XMLSchema">
+  <xs:include schemaLocation="shared.xsd"/>
+  <xs:element name="MARKETPLACE">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="ID" type="xs:integer"/>
+        <xs:element name="UID" type="xs:integer"/>
+        <xs:element name="GID" type="xs:integer"/>
+        <xs:element name="UNAME" type="xs:string"/>
+        <xs:element name="GNAME" type="xs:string"/>
+        <xs:element name="NAME" type="xs:string"/>
+        <xs:element name="STATE" type="xs:integer"/>
+        <xs:element name="MARKET_MAD" type="xs:string"/>
+        <xs:element name="ZONE_ID" type="xs:string"/>
+        <xs:element name="TOTAL_MB" type="xs:integer"/>
+        <xs:element name="FREE_MB" type="xs:integer"/>
+        <xs:element name="USED_MB" type="xs:integer"/>
+        <xs:element name="MARKETPLACEAPPS" type="IDS"/>
+        <xs:element name="PERMISSIONS" type="PERMISSIONS"/>
+        <xs:element name="TEMPLATE" type="xs:anyType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

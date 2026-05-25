@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+# -------------------------------------------------------------------------- #
+
+import sys
+
+sys.path.insert(
+    0,
+    "/usr/lib/one/python/",
+)
+import base64
+import time
+
+from lib import OptimizerParser, OptimizerSerializer
+
+
+def main():
+    # Read from standard input
+    stdin_data = sys.stdin.read()
+    decoded_data = base64.b64decode(stdin_data)
+
+    # Parse XML input and build Optimizer
+    parser = OptimizerParser(stdin_data=decoded_data, mode="optimize")
+    optimizer = parser.build_optimizer()
+
+    # Execute Optimizer
+    start_time = time.time()
+    optimizer.map()
+    elapsed = time.time() - start_time
+    placement = optimizer._opt_placement
+
+    # Serialize Optimizer response
+    serializer = OptimizerSerializer(parser)
+    scheduler_output, logs = serializer.build_optimizer_output(opt_placement=placement)
+    xml_output = serializer.render(scheduler_output)
+    sys.stdout.write(xml_output)
+
+    # VM log messages
+    for vm_id, level, message in logs:
+        parser.log_vm(level, vm_id, message)
+
+    # General log message
+    status = optimizer.report().splitlines()[1].strip().upper()
+    if status == "ERROR" or status == "INFEASIBLE":
+        parser.log_general("ERROR", "Unable to find optimal solution")
+        sys.exit(1)
+    else:
+        parser.log_general("INFO", f"Optimization problem solved in {int(elapsed)}s")
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

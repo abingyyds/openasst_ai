@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# cpds host:remote_system_dir/disk.0 source snapid vmid dsid
+#   - host where the VM is deployed
+#   - remote_system_ds is the path for the system datastore in the host
+#   - SOURCE is the path of the disk image in the form DS_BASE_PATH/IMG_HASH
+#   - snapid is the snapshot id. "-1" for none
+
+SRC=$1
+DST=$2
+SNAP_ID=$3
+VM_ID=$4
+DS_IMG_ID=$5
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+DRIVER_PATH=$(dirname $0)
+
+source $TMCOMMON
+source ${DRIVER_PATH}/../../etc/tm/fs_lvm/fs_lvm.conf
+
+#-------------------------------------------------------------------------------
+# Set dst path and dir
+#-------------------------------------------------------------------------------
+SRC_PATH=$(arg_path "$SRC")
+SRC_HOST=$(arg_host "$SRC")
+
+DST_PATH=$(arg_path "$DST")
+
+DISK_ID=$(echo "$SRC_PATH"|$AWK -F. '{print $NF}')
+DS_SYS_ID=$(echo "$SRC_PATH"|$AWK -F/ '{print $(NF-2)}')
+
+LV_NAME="lv-one-$VM_ID-$DISK_ID"
+VG_NAME="vg-one-$DS_SYS_ID"
+
+LV_FULL="${VG_NAME}/${LV_NAME}"
+if [ "$SNAP_ID" -ge 0 ]; then
+    LV_FULL="${LV_FULL}_s${SNAP_ID}"
+    ACTIVATE="$SUDO $LVCHANGE -K -ay $LV_FULL > /dev/null 2>&1"
+    DEACTIVATE="$SUDO $LVCHANGE -an $LV_FULL > /dev/null 2>&1"
+fi
+
+DEV="/dev/${LV_FULL}"
+
+#-------------------------------------------------------------------------------
+# Get VM information
+#-------------------------------------------------------------------------------
+
+if is_undeployed "$VM_ID" "$SRC_HOST"; then
+
+    # get BRIDGE_LIST from image datastore
+    XPATH="${DRIVER_PATH}/../../datastore/xpath.rb --stdin"
+    IFS= read -r -d '' BRIDGE_LIST < <(onedatastore show -x "$DS_IMG_ID" \
+        | $XPATH /DATASTORE/TEMPLATE/BRIDGE_LIST )
+
+    if [ -n "$BRIDGE_LIST" ]; then
+        SRC_HOST=$(get_destination_host)
+    fi
+    # else we assume that FE have access to LVM storage
+
+    ACTIVATE="$SUDO $LVCHANGE -K -ay $LV_FULL > /dev/null 2>&1"
+    DEACTIVATE="$SUDO $LVCHANGE -an $LV_FULL > /dev/null 2>&1"
+fi
+
+#-------------------------------------------------------------------------------
+# Move the image back to the datastore
+#-------------------------------------------------------------------------------
+
+log "Dumping $SRC to $DST"
+
+if [ -n "$ACTIVATE" ]; then
+    DUMP_CMD=$(cat <<EOF
+        set -eo pipefail
+        $SSH "$SRC_HOST" "set -e; $ACTIVATE; $DD if=\"$DEV\" bs=${DD_BLOCK_SIZE:-64k} conv=sparse; $DEACTIVATE" | \
+            cat - > "$DST_PATH"
+EOF
+)
+else
+    DUMP_CMD=$(cat <<EOF
+        set -eo pipefail
+        $SSH "$SRC_HOST" "set -e; $DD if=\"$DEV\" bs=${DD_BLOCK_SIZE:-64k} conv=sparse" | cat - > "$DST_PATH"
+EOF
+)
+fi
+
+multiline_exec_and_log "$DUMP_CMD" "Error dumping $SRC to $DST"

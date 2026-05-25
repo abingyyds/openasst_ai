@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenNebula Prometheus OVS Exporter
+After=network-online.target openvswitch.service
+Wants=network-online.target
+StartLimitInterval=60
+StartLimitBurst=3
+
+[Service]
+User=oneadmin
+Group=oneadmin
+Type=simple
+Restart=on-failure
+RestartSec=5
+
+ExecStart=/usr/bin/ovs_exporter
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+{
+  "extends": ["opennebula"],
+  "settings": {
+    "import/resolver": {
+      "alias": {
+        "map": [
+          ["client", "./src/client"],
+          ["server", "./src/server"]
+        ],
+        "extensions": [".js"]
+      }
+    }
+  }
+}

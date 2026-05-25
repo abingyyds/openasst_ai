@@ -1,0 +1,740 @@
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+require_relative '../lib/command'
+require_relative '../lib/opennebula_vm'
+
+require 'json'
+require 'tempfile'
+
+# rubocop:disable Style/ClassAndModuleChildren
+# rubocop:disable Style/ClassVars
+
+# This module includes related KVM/Libvirt functions
+module VirtualMachineManagerKVM
+
+    #---------------------------------------------------------------------------
+    # KVM Configuration
+    #---------------------------------------------------------------------------
+
+    # Default locations for kvmrc file on the front-end (local) or
+    # hypervisor (remote)
+    KVMRC_LOCAL  = '/var/lib/one/remotes/etc/vmm/kvm/kvmrc'
+    KVMRC_REMOTE = '/var/tmp/one/etc/vmm/kvm/kvmrc'
+
+    # Loads env from the default local (front-end) path
+    def load_local_env
+        load_env(KVMRC_LOCAL)
+    end
+
+    # Loads env from the default remote (hypervisor) path
+    def load_remote_env
+        load_env(KVMRC_REMOTE)
+    end
+
+    # Defines env variables for the current proccess by parsing a Shell
+    # formatted file
+    def load_env(path)
+        File.readlines(path).each do |l|
+            next if l.empty? || l[0] == '#'
+
+            m = l.match(/(export)?[[:blank:]]*([^=]+)=([[:blank:]]*(['"]).*?\4|[^#\n]*)/)
+
+            next unless m
+
+            k = m[2]
+            v = m[3].strip
+
+            # remove single or double quotes
+            if !v.empty? && v[0] == v[-1] && ["'", '"'].include?(v[0])
+                v = v.slice(1, v.length-2)
+            end
+
+            ENV[k] = v.delete("\n") if k && v
+        end
+    rescue StandardError
+    end
+
+    # @return a virsh command considering LIBVIRT_URI env
+    def virsh
+        uri = ENV['LIBVIRT_URI']
+        uri ||= 'qemu:///system'
+
+        "virsh --connect #{uri}"
+    end
+
+    # --------------------------------------------------------------------------
+    # This class abstracts the information and several methods to operate over
+    # qcow2 disk images files
+    # --------------------------------------------------------------------------
+    class QemuImg
+
+        attr_reader :path
+
+        def initialize(path)
+            @_info = nil
+            @path  = path
+        end
+
+        # @return[Array] with major, minor and micro qemu-img version numbers
+        def self.version
+            out, _err, _rc = Open3.capture3('qemu-img --version')
+
+            m = out.lines.first.match(/([0-9]+)\.([0-9]+)\.([0-9]+)/)
+
+            return '0000000' unless m
+
+            [m[1], m[2], m[3]]
+        end
+
+        # qemu-img command methods
+        #   @param args[String] non option argument
+        #   @param opts[Hash] options arguments:
+        #     -keys options as symbols, e.g.
+        #       :o          '-o'
+        #       :disks      '--disks'
+        #       :disk_only  '--disk-only'
+        #       :map=       '--map= '
+        #     -values option values, can be empty
+        QEMU_IMG_COMMANDS = [
+            'convert',
+            'create',
+            'rebase',
+            'info',
+            'bitmap',
+            'commit'
+        ]
+
+        QEMU_IMG_COMMANDS.each do |command|
+            define_method(command.to_sym) do |args = '', opts|
+                cmd_str = "qemu-img #{command}"
+
+                opts.each do |key, value|
+                    next if key == :stdin_data
+
+                    if key.length == 1
+                        cmd_str << " -#{key}"
+                    else
+                        cmd_str << " --#{key.to_s.gsub('_', '-')}"
+                    end
+
+                    if value && !value.empty?
+                        cmd_str << ' ' if key[-1] != '='
+                        cmd_str << value.to_s
+                    end
+                end
+
+                out, err, rc = Open3.capture3("#{cmd_str} #{@path} #{args}",
+                                              :stdin_data => opts[:stdin_data])
+
+                if rc.exitstatus != 0
+                    msg = "Error executing: #{cmd_str} #{@path} #{args}\n"
+                    msg << "\t[stderr]: #{err}" unless err.empty?
+                    msg << "\t[stdout]: #{out}" unless out.empty?
+
+                    raise StandardError, msg
+                end
+
+                out
+            end
+        end
+
+        # Access image attribute
+        def [](key)
+            if !@_info
+                out    = info(:output => 'json', :force_share => '')
+                @_info = JSON.parse(out)
+            end
+
+            @_info[key]
+        end
+
+    end
+
+    #
+    # This class provides abstractions to access KVM/Qemu libvirt domains
+    #
+    class KvmDomain
+
+        attr_reader :domain
+
+        def initialize(domain)
+            @domain = domain
+            @xml    = nil
+
+            out, err, rc = Open3.capture3("#{virsh} dumpxml #{@domain}")
+
+            if out.nil? || out.empty? || rc.exitstatus != 0
+                raise StandardError, "Error getting domain info #{err}"
+            end
+
+            @xml = XMLElement.new_s out
+
+            @snapshots = []
+            @snapshots_current = nil
+
+            @disks = nil
+        end
+
+        def [](xpath)
+            @xml[xpath]
+        end
+
+        def exist?(xpath)
+            @xml.exist?(xpath)
+        end
+
+        # ---------------------------------------------------------------------
+        # VM system snapshots interface
+        # ---------------------------------------------------------------------
+
+        # Get the system snapshots of a domain
+        #
+        #  @param query[Boolean] refresh the snapshot information by querying
+        #         libvirtd daemon
+        #
+        #  @return [Array] the array of snapshots name, and the current snapshot
+        #          (if any)
+        def snapshots(query = true)
+            return [@snapshots, @snapshots_current] unless query
+
+            o, e, rc = Open3.capture3("#{virsh} snapshot-list #{@domain} --name")
+
+            if rc.exitstatus != 0
+                raise StandardError, "Error getting domain snapshots #{e}"
+            end
+
+            @snapshots = o.lines.map {|l| l.strip! }
+            @snapshots.reject! {|s| s.empty? }
+
+            return [@snapshots, nil] if @snapshots.empty?
+
+            o, _e, rc = Open3.capture3("#{virsh} snapshot-current #{@domain} --name")
+
+            @snapshots_current = o.strip if rc.exitstatus == 0
+
+            [@snapshots, @snapshots_current]
+        end
+
+        # Delete domain metadata snapshots.
+        #   @param query[Boolean] update the snapshot list of the domain
+        def snapshots_delete(query = true)
+            snapshots(query)
+
+            delete = "#{virsh} snapshot-delete #{@domain} --metadata --snapshotname"
+
+            @snapshots.each do |snap|
+                Command.execute_log("#{delete} #{snap}")
+            end
+        end
+
+        # Redefine system snapshots on the destination libvirtd, the internal
+        # list needs to be bootstraped by using the snapshots or snapshots_delete
+        #
+        #   @param host[String] where the snapshots will be defined
+        #   @param dir[String] VM folder path to look for the XML snapshot
+        #          metadata files
+        def snapshots_redefine(host, dir)
+            define  = "#{virsh_cmd(host)} snapshot-create --redefine #{@domain}"
+            current = "#{virsh_cmd(host)} snapshot-current #{@domain}"
+
+            @snapshots.each do |snap|
+                Command.execute_log("#{define} #{dir}/#{snap}.xml")
+            end
+
+            return unless @snapshots_current
+
+            Command.execute_log("#{current} #{@snapshots_current}")
+        end
+
+        # ---------------------------------------------------------------------
+        # vm disk interface
+        # ---------------------------------------------------------------------
+
+        # Gets the list of disks of a domain as an Array of [dev, path] pairs
+        #   - dev is the device name of the blk, e.g. vda, sdb...
+        #   - path of the file for the virtual disk
+        def disks
+            if !@disks
+                o, e, rc = Open3.capture3("#{virsh} domblklist #{@domain}")
+
+                if rc.exitstatus != 0
+                    raise StandardError, "Error getting domain snapshots #{e}"
+                end
+
+                @disks =
+                    o.lines[2..o.lines.length]
+                     .reject {|l| l.chomp.empty? }
+                     .map do |l|
+                         (dev, path) = l.split
+                         [dev, Pathname.new(path)]
+                     end
+            end
+
+            @disks
+        end
+
+        # @return [Boolean] true if the disk (by path) is readonly
+        def readonly?(disk_path)
+            exist? "//domain/devices/disk[source/@file='#{disk_path}']/readonly"
+        end
+
+        # ---------------------------------------------------------------------
+        # domain operations
+        # ---------------------------------------------------------------------
+
+        # Live migrate the domain to the target host (SHARED STORAGE variant)
+        #   @param host[String] name of the target host
+        #   @param per_vm_opts[String] optional per-VM migration options
+        def live_migrate(host, per_vm_opts = '')
+            cmd = "migrate --live #{ENV.fetch('MIGRATE_OPTIONS', '')} #{per_vm_opts} #{@domain}"
+            cmd << " #{virsh_uri(host)}"
+
+            virsh_retry(cmd, 'active block job', virsh_tries)
+        end
+
+        # Live migrate the domain to the target host (LOCAL STORAGE variant)
+        #   @param host[String] name of the target host
+        #   @param devs[Array] of the disks that will be copied
+        #   @param per_vm_opts[String] optional per-VM migration options
+        def live_migrate_disks(host, devs, per_vm_opts = '')
+            cmd = "migrate --live #{ENV.fetch('MIGRATE_OPTIONS', '')} #{per_vm_opts} --suspend"
+            cmd << " #{@domain} #{virsh_uri(host)}"
+
+            if !devs.empty?
+                cmd << " --copy-storage-all --migrate-disks #{devs.join(',')}"
+            end
+
+            virsh_retry(cmd, 'active block job', virsh_tries)
+        end
+
+        # Live migrate the given disks between the given VM directories.
+        # This only works within the same host.
+        #
+        #   @param disks[Array] disks (as (dev,path) tuples) to be moved
+        #          Example: [['vda', '/var/lib/one/datastores/0/12/disk.0']]
+        #   @param rodisks[Array] read-only disks (as (dev,path) tuples) to be redefined
+        #          Example: [['hda', '/var/lib/one/datastores/0/12/disk.1']]
+        #   @param src_dir[Pathname] source VM dir
+        #          Example: /var/lib/one/datastores/0/12
+        #   @param dst_dir[Pathname] destination VM dir
+        #          Example: /var/lib/one/datastores/100/12
+        def live_blockcopy_disks(disks, rodisks, src_dir, dst_dir)
+            disks.each do |(dev, path)|
+                new_path = dst_dir + path.relative_path_from(src_dir)
+
+                `mkdir -p #{new_path.dirname}; touch #{new_path}`
+
+                qimg = QemuImg.new(path.to_s)
+                has_backing = qimg['backing-filename'] && !qimg['backing-filename'].empty?
+
+                # --pivot: Pivot the VM to use the new disk after copy.
+                # --reuse-external: Reuse existing backing files on the destination.
+                # --shallow: Only copy the top layer of a disk with backing files.
+                # --blockdev: Destination file is a block device (e.g., LV)
+                cmd =  "blockcopy #{@domain} #{dev} #{new_path} " \
+                       '--wait --verbose --pivot --reuse-external'
+                cmd << ' --shallow' if has_backing
+                cmd << ' --blockdev' if path.symlink? && path.readlink.blockdev?
+
+                rc, out, err = virsh_retry(cmd, 'active block job', virsh_tries)
+                return [rc, out, err] if rc != 0
+            end
+
+            rodisks.each do |(dev, path)|
+                new_path = dst_dir + path.relative_path_from(src_dir)
+                cmd      = "change-media #{@domain} #{dev} #{new_path} --update --force"
+
+                rc, out, err = virsh_retry(cmd, 'active block job', virsh_tries)
+                return [rc, out, err] if rc != 0
+            end
+
+            # Update one:system_datastore metadata tag in running VM
+            tmpf = Tempfile.new([@domain, '.xml'])
+
+            virsh_retry("dumpxml #{@domain} > '#{tmpf.path}'", 'active block job', virsh_tries)
+
+            `sed -i '/one:system_datastore/s:CDATA\\[[^]]*\\]:CDATA[#{dst_dir}]:' '#{tmpf.path}'`
+
+            virsh_retry("define '#{tmpf.path}'", 'active block job', virsh_tries)
+
+            tmpf.unlink
+
+            # `define` makes the VM persistent. We immediately `undefine` it to
+            # keep it transient.
+            undefine
+
+            [0, nil, nil]
+        end
+
+        #  Basic domain operations (does not require additional parameters)
+        VIRSH_COMMANDS = [
+            'resume',
+            'destroy',
+            'undefine'
+        ]
+
+        VIRSH_COMMANDS.each do |command|
+            define_method(command.to_sym) do |host = nil|
+                Command.execute_log("#{virsh_cmd(host)} #{command} #{@domain}")
+            end
+        end
+
+        # ---------------------------------------------------------------------
+        # Private function helpers
+        # ---------------------------------------------------------------------
+        private
+
+        # @return [Integer] number of retries for virsh operations
+        def virsh_tries
+            vt = ENV['VIRSH_TRIES'].to_i
+            vt = 3 if vt == 0
+
+            vt
+        end
+
+        # @return [String] including the --connect attribute to run virsh commands
+        def virsh_cmd(host = nil)
+            if host
+                "virsh --connect #{virsh_uri(host)}"
+            else
+                virsh
+            end
+        end
+
+        # @return [String] to contact libvirtd in a host
+        def virsh_uri(host)
+            proto = ENV['QEMU_PROTOCOL']
+            proto ||= 'qemu+ssh'
+
+            "#{proto}://#{host}/system"
+        end
+
+        # Retries a virsh operation if the returned error matches the provided
+        # one,
+        #
+        #  @param cmd[String] the virsh command arguments
+        #  @param no_error_str[String] when stderr matches the string the operation
+        #         will be retried
+        #  @param tries[Integer] number of tries
+        #  @param secs[Integer] seconds to wait between tries
+        def virsh_retry(cmd, no_error_str, tries = 1, secs = 5)
+            out, err, rc = nil
+
+            tini = Time.now
+
+            loop do
+                tries -= 1
+
+                out, err, rc = Open3.capture3("#{virsh} #{cmd}")
+
+                break if rc.exitstatus == 0
+
+                match = err.match(/#{no_error_str}/)
+
+                break if tries == 0 || !match
+
+                sleep(secs)
+            end
+
+            if rc.exitstatus == 0
+                STDERR.puts "#{virsh} #{cmd} (#{Time.now-tini}s)"
+            else
+                STDERR.puts "Error executing: #{virsh} #{cmd} (#{Time.now-tini}s)"
+                STDERR.puts "\t[stdout]: #{out}" unless out.empty?
+                STDERR.puts "\t[stderr]: #{err}" unless err.empty?
+            end
+
+            [rc.exitstatus, out, err]
+        end
+
+    end
+
+    #---------------------------------------------------------------------------
+    # OpenNebula KVM Virtual Machine
+    #---------------------------------------------------------------------------
+    # This class parses and wraps the information in the Driver action data
+    # It provides some helper functions to implement KVM driver actions
+    class KvmVM < OpenNebulaVM
+
+        # Default folder for DPDK vhost sockets, same as in VirtualNetwork.h
+        VHOST_DIR = '/var/run/one/vhost-socks'
+
+        def initialize(xml_action)
+            super(xml_action, {})
+
+            # if set, it will scope VM element access
+            @xpath_prefix = ''
+        end
+
+        #-----------------------------------------------------------------------
+        #  This function generates a XML document to attach a new interface
+        #  to the VM. The interface specification supports the same OpenNebula
+        #  attributes.
+        #
+        #  Model and filter can be set in kvmrc with DEFAULT_ATTACH_NIC_MODEL
+        #  and DEFAULT_ATTACH_NIC_FILTER, respectively
+        #
+        #  Example:
+        #
+        #  <interface type='bridge'>
+        #    <source bridge='onebr57'/>
+        #    <mac address='02:00:c0:a8:96:01'/>
+        #    <target dev='one-160-1'/>
+        #    <model type='virtio'/>
+        #  </interface>
+        #-----------------------------------------------------------------------
+        def interface_xml
+            prefix_old    = @xpath_prefix
+            @xpath_prefix = "TEMPLATE/NIC[ATTACH='YES']/"
+
+            model = @xml["#{@xpath_prefix}MODEL"]
+            model = env('DEFAULT_ATTACH_NIC_MODEL') if model.empty?
+            model.encode!(:xml => :attr) unless model.empty?
+
+            virtio_queues = @xml["#{@xpath_prefix}VIRTIO_QUEUES"]
+            virtio_queues = @xml['TEMPLATE/VCPU'] || '1' if virtio_queues == 'auto'
+            virtio_queues.encode!(:xml => :attr) unless virtio_queues.empty?
+
+            filter = @xml["#{@xpath_prefix}FILTER"]
+            filter = env('DEFAULT_ATTACH_NIC_FILTER') if filter.empty?
+            filter.encode!(:xml => :attr) unless filter.empty?
+
+            if exist? 'BRIDGE'
+                bridge_type = @xml["#{@xpath_prefix}BRIDGE_TYPE"]
+
+                case bridge_type
+                when 'openvswitch'
+                    dev = '<interface type="bridge">'
+                    dev << '<virtualport type="openvswitch"/>'
+                    dev << xputs('<source bridge=%s/>', 'BRIDGE')
+                when 'openvswitch_dpdk'
+                    socket_path = vhost_socket_path(@xpath_prefix)
+                    socket_path.encode!(:xml => :attr)
+
+                    dev = '<interface type="vhostuser">'
+                    dev << "<source type='unix' mode='server' path=#{socket_path}/>"
+                else
+                    dev = '<interface type="bridge">'
+                    dev << xputs('<source bridge=%s/>', 'BRIDGE')
+                end
+
+            else
+                dev = '<interface type="ethernet">'
+            end
+
+            dev << xputs('<mac address=%s/>', 'MAC')
+            dev << xputs('<script path=%s/>', 'SCRIPT')
+
+            dev << xputs('<target dev=%s/>', 'TARGET')
+            dev << xputs('<boot order=%s/>', 'ORDER')
+            dev << "<model type=#{model}/>" unless model.empty?
+
+            if model == '"virtio"' && !virtio_queues.empty?
+                dev << "<driver name='vhost' queues=#{virtio_queues}/>"
+            end
+
+            if exist?('IP') && !filter.empty?
+                dev << "<filterref filter=#{filter}>"
+                dev << xputs('<parameter name="IP" value=%s/>', 'IP')
+                dev << xputs('<parameter name="IP" value=%s/>', 'VROUTER_IP')
+                dev << '</filterref>'
+            end
+
+            inb_keys = ['INBOUND_AVG_BW', 'INBOUND_PEAK_BW', 'INBOUND_PEAK_KB']
+            inbound  = inb_keys.any? {|e| exist? e }
+
+            outb_keys = ['OUTBOUND_AVG_BW', 'OUTBOUND_PEAK_BW', 'OUTBOUND_PEAK_KB']
+            outbound  = outb_keys.any? {|e| exist? e }
+
+            if inbound || outbound
+                dev << '<bandwidth>'
+
+                if inbound
+                    dev << '<inbound'
+                    dev << xputs(' average=%s', 'INBOUND_AVG_BW')
+                    dev << xputs(' peak=%s', 'INBOUND_PEAK_BW')
+                    dev << xputs(' burst=%s', 'INBOUND_PEAK_KB')
+                    dev << '/>'
+                end
+
+                if outbound
+                    dev << '<outbound'
+                    dev << xputs(' average=%s', 'OUTBOUND_AVG_BW')
+                    dev << xputs(' peak=%s', 'OUTBOUND_PEAK_BW')
+                    dev << xputs(' burst=%s', 'OUTBOUND_PEAK_KB')
+                    dev << '/>'
+                end
+
+                dev << '</bandwidth>'
+            end
+
+            dev << '</interface>'
+
+            @xpath_prefix = prefix_old
+
+            dev
+        end
+
+        def vf?(short_address)
+            cmd = "find /sys/devices -type l -name 'virtfn*' -printf '%p#'"\
+                " -exec readlink -f '{}' \\;"
+
+            out, _err, _rc = Open3.capture3(cmd)
+
+            return false if out.nil? || out.empty?
+
+            regexp = Regexp.new("#{short_address}$")
+
+            !out.match(regexp).nil?
+        end
+
+        def dumpxml_regexp(domain, str_exp)
+            cmd = "#{virsh} dumpxml #{domain}"
+
+            out, _err, _rc = Open3.capture3(cmd)
+
+            return false if out.nil? || out.empty?
+
+            regexp = Regexp.new(str_exp)
+
+            !out.match(regexp).nil?
+        end
+
+        #-----------------------------------------------------------------------
+        # This function generates a XML document to attach a new device
+        # to the VM. The specification supports the same OpenNebula attributes.
+        #
+        # Example:
+        #
+        # <hostdev mode='subsystem' type='pci' managed='yes'>
+        #   <source>
+        #     <address  domain='0x0000' bus='0x05' slot='0x02' function='0x0'/>
+        #   </source>
+        #   <address type='pci' domain='0x0' bus='0x01' slot='0x01' function='0'/>
+        # </hostdev>
+        #
+        # NOTE: Libvirt/QEMU seems to have a race condition accesing vfio device
+        # and the permission check/set that makes <hostdev> not work for VF.
+        #
+        # NOTE: On detach (as we are manging MAC/VLAN through ip link vf) devices
+        # needs to use <hostdev> format
+        #-----------------------------------------------------------------------
+        def hostdev_xml(defined_opts = {})
+            opts = {
+                :force_hostdev => false,
+                :pci => false
+            }.merge(defined_opts)
+
+            prefix_old    = @xpath_prefix
+            @xpath_prefix = "TEMPLATE/PCI[ATTACH='YES']/"
+
+            if exist? 'UUID'
+                dev = '<hostdev mode="subsystem" type="mdev" model="vfio-pci">'
+                dev << xputs('<source><address uuid=%s/></source>', 'UUID')
+                dev << '</hostdev>'
+            else
+                if opts[:force_hostdev]
+                    is_vf = false
+                else
+                    is_vf = vf?(@xml["#{@xpath_prefix}SHORT_ADDRESS"])
+                end
+
+                if is_vf
+                    dev = '<interface type="hostdev" managed="yes">'
+                    dev_end = '</interface>'
+                else
+                    dev = '<hostdev mode="subsystem" type="pci" managed="yes">'
+                    dev_end = '</hostdev>'
+                end
+
+                dev << '<source><address'
+                dev << ' type="pci"' if is_vf
+                dev << xputs(' domain=%s', 'DOMAIN', :hex => true)
+                dev << xputs(' bus=%s', 'BUS', :hex => true)
+                dev << xputs(' slot=%s', 'SLOT', :hex => true)
+                dev << xputs(' function=%s', 'FUNCTION', :hex => true)
+                dev << '/></source>'
+
+                # Setting Bus address needs to check that a PCI contoller is
+                # present for Bus 1
+                vm_addr = ['VM_DOMAIN', 'VM_BUS', 'VM_SLOT', 'VM_FUNCTION'].all? {|e| exist? e }
+
+                if vm_addr && opts[:pci]
+                    dev << '<address type="pci"'
+                    dev << xputs(' domain=%s', 'VM_DOMAIN')
+                    dev << xputs(' bus=%s', 'VM_BUS')
+                    dev << xputs(' slot=%s', 'VM_SLOT')
+                    dev << xputs(' function=%s', 'VM_FUNCTION')
+                    dev << '/>'
+                end
+
+                dev << dev_end
+            end
+
+            @xpath_prefix = prefix_old
+
+            dev
+        end
+
+        def dpdk_interface_xml(mac)
+            socket_path = vhost_socket_path("TEMPLATE/NIC[MAC='#{mac}']/")
+            socket_path.encode!(:xml => :attr)
+
+            '<interface type="vhostuser">' \
+            "<source type='unix' mode='server' path='#{socket_path}'/>" \
+            "<mac address='#{mac}'/>" \
+            '</interface>'
+        end
+
+        private
+
+        def vhost_socket_path(xpath_prefix)
+            "#{VHOST_DIR}/#{@xml["#{xpath_prefix}TARGET"]}"
+        end
+
+        # @return the string printing an XML VM attribute following the provided
+        # format.
+        # Options
+        # :hex to prepend 0x to the attribute
+        def xputs(format, name, opts = {})
+            value = @xml["#{@xpath_prefix}#{name}"]
+
+            return '' if value.empty?
+
+            value = "0x#{value}" if opts[:hex]
+
+            format(format, value.encode(:xml => :attr))
+        end
+
+        # @return true if the given VM element exists (considers xpath_prefix)
+        def exist?(name)
+            @xml.exist?("#{@xpath_prefix}#{name}")
+        end
+
+        # @return a copy of an env variable or '' if not defined
+        def env(name)
+            return '' if ENV[name].nil?
+
+            ENV[name].dup
+        end
+
+    end
+
+end
+
+# rubocop:enable Style/ClassAndModuleChildren
+# rubocop:enable Style/ClassVars

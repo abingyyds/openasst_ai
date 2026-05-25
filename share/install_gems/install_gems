@@ -1,0 +1,160 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+set -e -o pipefail
+
+if [ $# -gt 0 ] && [ "$*" != '--yes' ]; then
+    echo "Syntax: TARGET=[debian|redhat|suse] $(basename "$0") [--yes]" >&2
+    exit 1
+fi
+
+# Detect packaged gems and show a warning message
+GEMS_LOCATION='/usr/share/one/gems'
+if [ -d "$GEMS_LOCATION" ]; then
+    cat << EOF >&2
+WARNING: Running install_gems is not necessary anymore, as all the
+required dependencies are already installed by your packaging
+system into symlinked location $GEMS_LOCATION. Ruby gems
+installed by this script won't be used until this symlink exists.
+Remove the symlink before starting the OpenNebula services
+to use Ruby gems installed by this script. E.g. execute
+
+    # unlink $GEMS_LOCATION
+
+Execution continues in 15 seconds ...
+EOF
+
+    sleep 15
+    echo
+fi
+
+# detect target
+if command -v dpkg >/dev/null; then
+    TARGET=${TARGET:-debian}
+elif command -v zypper >/dev/null; then
+    TARGET=${TARGET:-suse}
+elif command -v rpm >/dev/null; then
+    TARGET=${TARGET:-redhat}
+fi
+
+# Install packages
+case "${TARGET}" in
+    'debian')
+        echo "* Install Build Dependencies for ${TARGET}"
+
+        export DEBIAN_FRONTEND=noninteractive
+
+        apt-get update >/dev/null
+
+        apt-get -y install \
+            ruby-dev make gcc libsqlite3-dev libcurl4-openssl-dev \
+            rake libxml2-dev libxslt1-dev patch g++ build-essential \
+            libssl-dev libaugeas-dev pkgconf \
+            >/dev/null
+
+        # default-libmysqlclient-dev OR libmysqlclient-dev
+        apt-get -y install default-libmysqlclient-dev >/dev/null 2>&1 || \
+            apt-get -y install libmysqlclient-dev >/dev/null
+
+        # workaround missing libxml2 headers on some Ubuntu/Debian
+        ln -s /usr/include/libxml2/libxml /usr/include/libxml || :
+        ;;
+    'redhat')
+        echo "* Install Build Dependencies for ${TARGET}"
+
+        dnf -y install ruby-devel make gcc sqlite-devel \
+            openssl-devel curl-devel rubygem-rake libxml2-devel \
+            libxslt-devel patch expat-devel gcc-c++ rpm-build augeas-devel \
+            rubygems \
+            >/dev/null
+        dnf -y install mysql-devel || dnf -y install mariadb-devel  # el10 missing mysql-devel
+        ;;
+    'suse')
+        echo "* Install Build Dependencies for ${TARGET}"
+
+        zypper -n install \
+            ruby-devel make gcc sqlite3-devel libcurl-devel \
+            libxml2-devel libxslt-devel patch gcc-c++ \
+            libopenssl-devel augeas-devel rpm-build \
+            >/dev/null
+
+        zypper -n install pkgconf >/dev/null 2>&1 || \
+            zypper -n install pkg-config >/dev/null 2>&1 || :
+
+        zypper -n install libmariadb-devel >/dev/null 2>&1 || \
+            zypper -n install mariadb-connector-c-devel >/dev/null || :
+        ;;
+    *)
+        echo "Unknown target ${TARGET}. Skipping build dependencies" >&2
+        ;;
+esac
+
+# Install Bundler
+if ! command -v bundler >/dev/null; then
+    echo '* Install Bundler'
+
+    for VERSION in '' '2.3.27' '<2'; do
+        if [ -z "$VERSION" ]; then
+            if gem install bundler >/dev/null 2>&1; then
+                break
+            fi
+        else
+            if gem install bundler --version "$VERSION" >/dev/null 2>&1; then
+                break
+            fi
+        fi
+    done
+
+    # SUSE update-alternatives creates bundler.ruby* instead of bundler
+    if ! command -v bundler >/dev/null; then
+        ln -sf $(ls /usr/bin/bundler.ruby* 2>/dev/null | head -1) /usr/bin/bundler 2>/dev/null ||:
+        ln -sf $(ls /usr/bin/bundle.ruby* 2>/dev/null | head -1) /usr/bin/bundle 2>/dev/null ||:
+    fi
+
+    if ! command -v bundler >/dev/null; then
+        echo "ERROR: Failed to install Bundler" >&2
+        exit 1
+    fi
+fi
+
+# Find Gemfile location and pass to Bundler
+echo '* Install Gem Dependencies'
+
+bundler_version=$(bundler --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+bundle_higher_or_eq_4_0_0=$(ruby -e "require 'rubygems'; puts Gem::Version.new('$bundler_version') >= Gem::Version.new('4.0.0') ? 1 : 0")
+if [ "$bundle_higher_or_eq_4_0_0" -eq 1 ]; then
+    bundle config set --global path.system true
+fi
+
+for GEMFILE in \
+    "${PWD}/Gemfile" \
+    "${ONE_LOCATION}/share/Gemfile" \
+    "/usr/share/one/Gemfile"
+do
+    if [ -f "${GEMFILE}" ]; then
+        bundle config set path.system true
+        bundle install --gemfile="${GEMFILE}"
+
+        echo 'Successfully done!'
+        exit 0
+    fi
+done
+
+# Fail if no Gemfile found
+echo "ERROR: No Gemfile found" >&2
+exit 1

@@ -1,0 +1,201 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION'] unless defined?(ONE_LOCATION)
+
+if !ONE_LOCATION
+    LIB_LOCATION      ||= '/usr/lib/one'
+    RUBY_LIB_LOCATION ||= '/usr/lib/one/ruby'
+    GEMS_LOCATION     ||= '/usr/share/one/gems'
+else
+    LIB_LOCATION      ||= ONE_LOCATION + '/lib'
+    RUBY_LIB_LOCATION ||= ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     ||= ONE_LOCATION + '/share/gems'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require 'rexml/document'
+require 'json'
+require 'securerandom'
+
+require_relative '../lib/tm_action'
+require_relative '../lib/ceph'
+require_relative '../lib/datastore'
+require_relative '../lib/backup_qcow2'
+
+#-------------------------------------------------------------------------------
+# RESTORE host:remote_system_ds vm_id img_id inc_id disk_id
+#-------------------------------------------------------------------------------
+dir       = ARGV[0].split ':'
+vm_id     = ARGV[1]
+bk_img_id = ARGV[2].to_i
+inc_id    = ARGV[3]
+disk_id   = ARGV[4].to_i
+
+rhost = dir[0]
+rdir  = dir[1]
+
+begin
+    action = TransferManager::Action.new(:action_name => 'restore',
+                                         :vm_id => vm_id)
+
+    vm = KVMDomain.new(action.vm.to_xml, rdir)
+
+    # --------------------------------------------------------------------------
+    # Image & Datastore information
+    # --------------------------------------------------------------------------
+    bk_img = OpenNebula::Image.new_with_id(bk_img_id, action.one)
+
+    rc = bk_img.info
+    raise rc.message.to_s if OpenNebula.is_error?(rc)
+
+    bk_ds = TransferManager::Datastore.from_image_ds(:image  => bk_img,
+                                                     :client => action.one)
+
+    # --------------------------------------------------------------------------
+    # Backup information
+    # sample output: {"0":"rsync://100//0:3ffce7/var/lib/one/datastores/100/1/3ffce7/disk.0.0"}
+    # --------------------------------------------------------------------------
+    xml_data = <<~EOS
+        #{action.vm.to_xml}
+        #{bk_img.to_xml}
+    EOS
+
+    disk_urls = bk_ds.ls_increment(inc_id, xml_data, disk_id)
+
+    # --------------------------------------------------------------------------
+    # Restore disk_urls in Host VM folder
+    # --------------------------------------------------------------------------
+    ceph_disks    = TransferManager::Ceph::Disk.from_vm(action.vm.to_xml)
+    success_disks = []
+
+    info = {}
+
+    # Recover TPM state
+    if (tpm_url = disk_urls.delete('tpm'))
+        dst = "#{rdir}/disk.tpm.backup"
+        download = <<~EOS
+            #{__dir__}/../../datastore/downloader.sh --nodecomp #{tpm_url} - | \
+              ssh #{rhost} dd of=#{dst} bs=64k
+        EOS
+
+        rc = action.ssh(:host => nil,
+                        :cmds => download,
+                        :forward  => false,
+                        :nostdout => false,
+                        :nostderr => false)
+
+        raise 'cannot download vTPM backup' unless rc.code == 0
+
+        rc = action.ssh(:host => rhost,
+                        :cmds => vm.restore_tpm_sh(dst),
+                        :forward  => false,
+                        :nostdout => false,
+                        :nostderr => false)
+
+        raise 'cannot recover vTPM' unless rc.code == 0
+    end
+
+    disk_urls.each do |id, url|
+        ceph_disk  = ceph_disks[id.to_i]
+        randsuffix = SecureRandom.hex(4)
+
+        ceph_one_ds = OpenNebula::Datastore.new_with_id(
+            action.vm["/VM/TEMPLATE/DISK[DISK_ID = #{id}]/DATASTORE_ID"].to_i, action.one
+        )
+        ceph_ds = TransferManager::Datastore.new(:ds => ceph_one_ds, :client => action.one)
+
+        info[ceph_disk] = {
+            :br  => ceph_ds.pick_bridge,
+            :new => "#{ceph_disk.rbd_image}.new.#{randsuffix}",
+            :old => "#{ceph_disk.rbd_image}.old.#{randsuffix}"
+        }
+
+        upload_ceph = <<~EOS
+            tmpdir="$(mktemp -dt disk#{id}.XXXX)"
+            tmpimg="$tmpdir/image"
+            trap "rm -rf '$tmpdir'" EXIT
+            #{__dir__}/../../datastore/downloader.sh --nodecomp #{url} $tmpimg && \
+            if file $tmpimg | grep -q gzip; then
+                cd $tmpdir
+                tar zxf $tmpimg
+                #{ceph_disk.restore_sh(info[ceph_disk][:new], ceph_ds, info[ceph_disk][:br])}
+                cd -
+            else
+                qemu-img convert -m 4 -O raw $tmpimg $tmpimg.raw && \
+                ssh #{info[ceph_disk][:br]} #{ceph_disk.rbd_cmd} import - #{info[ceph_disk][:new]} < $tmpimg.raw
+            fi
+        EOS
+
+        rc = action.ssh(:host => nil,
+                        :cmds => upload_ceph,
+                        :forward  => false,
+                        :nostdout => false,
+                        :nostderr => false)
+
+        break if rc.code != 0
+
+        success_disks << ceph_disk
+    end
+
+    # Rollback and raise error if it was unable to restore all disks
+    if success_disks.length != disk_urls.length
+        success_disks.each do |ceph_disk|
+            cleanup = <<~EOS
+                #{ceph_disk.rbd_cmd} rm #{info[ceph_disk][:new]}
+            EOS
+
+            action.ssh(:host => info[ceph_disk][:br],
+                       :cmds => cleanup,
+                       :forward  => false,
+                       :nostdout => false,
+                       :nostderr => false)
+        end
+
+        raise "error uploading backup disk to Ceph (#{success_disks.length}/#{disk_urls.length})"
+    end
+
+    # --------------------------------------------------------------------------
+    # Replace VM disk_urls with backup copies (~prolog)
+    # --------------------------------------------------------------------------
+    success_disks.each do |ceph_disk|
+        move = <<~EOS
+            #{ceph_disk.shdefs}
+
+            #{ceph_disk.rbd_cmd} mv #{ceph_disk.rbd_image} #{info[ceph_disk][:old]} && \
+            #{ceph_disk.rbd_cmd} mv #{info[ceph_disk][:new]} #{ceph_disk.rbd_image} && \
+            rbd_rm_image #{info[ceph_disk][:old]}
+        EOS
+
+        rc = action.ssh(:host => info[ceph_disk][:br],
+                        :cmds => move,
+                        :forward  => false,
+                        :nostdout => false,
+                        :nostderr => false)
+
+        raise StandardError, 'cannot restore disk backup' if rc.code != 0
+    end
+rescue StandardError => e
+    STDERR.puts "Error restoring VM disks: #{e.message}"
+    exit(1)
+end

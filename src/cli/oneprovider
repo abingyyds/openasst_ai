@@ -1,0 +1,315 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    LIB_LOCATION      = '/usr/lib/one'
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+else
+    LIB_LOCATION      = ONE_LOCATION + '/lib'
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+end
+
+require 'load_opennebula_paths'
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+$LOAD_PATH << RUBY_LIB_LOCATION + '/cli'
+
+USER_AGENT = 'CLI'
+
+require 'tempfile'
+require 'command_parser'
+require 'one_helper'
+require 'opennebula/oneform_client'
+
+require 'one_helper/oneprovider_helper'
+
+CommandParser::CmdParser.new(ARGV) do
+    FORMAT = [OpenNebulaHelper::JSON, OpenNebulaHelper::YAML]
+
+    usage '`oneprovider` <command> [<args>] [<options>]'
+    version OpenNebulaHelper::ONE_VERSION
+
+    set :option, OneForm::Client::DEFAULT_OPTIONS
+    set :option, CommandParser::VERSION
+    set :option, CommandParser::HELP
+
+    SENSITIVE = {
+        :name => 'sensitive',
+        :short => '-s',
+        :large => '--sensitive',
+        :description => 'Include sensitive values information in the output',
+        :default => false
+    }
+
+    ENABLED = {
+        :name => 'enabled',
+        :short => '-e',
+        :large => '--enabled',
+        :description => 'Show only enabled providers',
+        :default => false
+    }
+
+    helper = OneProviderHelper.new
+
+    ############################################################################
+    # Formatters for arguments
+    ############################################################################
+    set :format, :groupid, OpenNebulaHelper.rname_to_id_desc('GROUP') do |arg|
+        OpenNebulaHelper.rname_to_id(arg, 'GROUP')
+    end
+
+    set :format, :userid, OpenNebulaHelper.rname_to_id_desc('USER') do |arg|
+        OpenNebulaHelper.rname_to_id(arg, 'USER')
+    end
+
+    set :format, :templateid, OneForm::Helpers.rname_to_id_desc('PROVIDER') do |arg|
+        OneForm::Helpers.rname_to_id(arg, 'PROVIDER')
+    end
+
+    set :format, :templateid_list, OneForm::Helpers.list_to_id_desc('PROVIDER') do |arg|
+        OneForm::Helpers.list_to_id(arg, 'PROVIDER')
+    end
+
+    ########################################################################
+    # Commands for interacting with provider templates
+    ########################################################################
+
+    list_desc = <<-EOT.unindent
+        List all providers.
+    EOT
+
+    command :list,
+            list_desc,
+            :options => (
+                FORMAT + CLIHelper::OPTIONS +
+                [OpenNebulaHelper::DESCRIBE, SENSITIVE, ENABLED]
+            ) do
+        sensitive = options[:sensitive] || false
+        enabled   = options[:enabled] || false
+
+        helper.list_provider_pool(
+            helper.client(options),
+            options,
+            :include_sensitive => sensitive,
+            :enabled           => enabled
+        )
+    end
+
+    top_desc = <<-EOT.unindent
+        List the available Service Templates continuously
+    EOT
+
+    command :top,
+            top_desc,
+            :options => FORMAT + [CLIHelper::DELAY, SENSITIVE, ENABLED] do
+        Signal.trap('INT') { exit(-1) }
+        sensitive = options[:sensitive] || false
+        enabled   = options[:enabled] || false
+
+        helper.top_provider_pool(
+            helper.client(options),
+            options,
+            :include_sensitive => sensitive,
+            :enabled           => enabled
+        )
+
+        0
+    end
+
+    show_desc = <<-EOT.unindent
+        Show details of a specific provider template.
+    EOT
+
+    command :show, show_desc, :provider_id, :options => FORMAT + [SENSITIVE] do
+        provider_id = args[0].to_i
+        sensitive   = options[:sensitive] || false
+
+        if args[0].to_s !~ /^\d+$/
+            STDERR.puts 'Invalid provider ID'
+            exit(-1)
+        end
+
+        helper.format_resource(
+            helper.client(options),
+            provider_id,
+            options,
+            :include_sensitive => sensitive
+        )
+    end
+
+    create_desc = <<-EOT.unindent
+        Create a Provider object based on driver information.
+    EOT
+
+    command :create, create_desc, :driver_name, [:file, nil] do
+        driver_name = args[0]
+        file        = args[1]
+
+        client = helper.client(options)
+        body   = helper.read_json_input(file) || {}
+        doc    = client.get_driver(driver_name)
+
+        return [doc[:err_code], doc[:message]] if CloudClient.is_error?(doc)
+
+        # If no user_inputs_values are provided, try to get user inputs
+        unless body[:connection_values]
+            body[:connection_values] = helper.get_user_values(doc[:connection])
+        end
+
+        response = client.create_provider(driver_name, body)
+
+        return [response[:err_code], response[:message]] \
+            if CloudClient.is_error?(response)
+
+        puts "ID: #{response[:ID]}"
+
+        0
+    end
+
+    update_desc = <<-EOT.unindent
+        Update a provider template by ID with the provided patch data.
+    EOT
+
+    command :update, update_desc, :provider_id, [:file, nil] do
+        provider_id = args[0].to_i
+        file_path   = args[1]
+
+        helper.update_resource(helper.client(options), provider_id, file_path)
+    end
+
+    rename_desc = <<-EOT.unindent
+        Renames the Provider
+    EOT
+
+    command :rename, rename_desc, :provider_id, :name do
+        if args[1].nil? || args[1].empty?
+            STDERR.puts 'Name cannot be empty'
+            exit(-1)
+        end
+
+        client      = helper.client(options)
+        provider_id = args[0].to_i
+        name        = args[1]
+
+        response = client.update_provider(provider_id, { :name => name })
+        return [response[:err_code], response[:message]] \
+                if CloudClient.is_error?(response)
+
+        0
+    end
+
+    chgrp_desc = <<-EOT.unindent
+        Change the group of a provider.
+    EOT
+
+    command :chgrp, chgrp_desc, [:range, :providerid_list], :groupid do
+        if args[1].to_s !~ /^\d+$/
+            STDERR.puts 'Invalid group ID'
+            exit(-1)
+        end
+
+        client      = helper.client(options)
+        ids         = args[0]
+        group_id    = args[1].to_i
+
+        ids.each do |id|
+            response = client.chgrp_provider(id, group_id)
+            return [response[:err_code], response[:message]] \
+                if CloudClient.is_error?(response)
+        end
+
+        0
+    end
+
+    chown_desc = <<-EOT.unindent
+        Change the owner of a provider.
+    EOT
+
+    command :chown,
+            chown_desc,
+            [:range, :providerid_list],
+            :userid,
+            [:groupid, nil] do
+        if args[1].to_s !~ /^\d+$/
+            STDERR.puts 'Invalid user ID'
+            exit(-1)
+        end
+
+        if args[2] && args[2].to_s !~ /^\d+$/
+            STDERR.puts 'Invalid group ID'
+            exit(-1)
+        end
+
+        client      = helper.client(options)
+        ids         = args[0]
+        user_id     = args[1].to_i
+        group_id    = args[2] ? args[2].to_i : nil
+
+        ids.each do |id|
+            response = client.chown_provider(id, user_id, group_id)
+            return [response[:err_code], response[:message]] \
+                if CloudClient.is_error?(response)
+        end
+
+        0
+    end
+
+    chmod_desc = <<-EOT.unindent
+        Change the permissions of a provider.
+    EOT
+
+    command :chmod, chmod_desc, [:range, :providerid_list], :octet do
+        if !/\A\d+\z/.match(args[1])
+            STDERR.puts "Invalid '#{args[1]}' octed permissions"
+            exit(-1)
+        end
+
+        client      = helper.client(options)
+        ids         = args[0]
+        octet       = OpenNebulaHelper.to_octet(args[1])
+
+        ids.each do |id|
+            response = client.chmod_provider(id, octet)
+            return [response[:err_code], response[:message]] \
+                if CloudClient.is_error?(response)
+        end
+
+        0
+    end
+
+    delete_desc = <<-EOT.unindent
+        Delete a provider template by ID.
+    EOT
+
+    command :delete, delete_desc, [:range, :providerid_list] do
+        client = helper.client(options)
+        ids    = args[0]
+
+        ids.each do |id|
+            response = client.delete_provider(id)
+            return [response[:err_code], response[:message]] \
+                if CloudClient.is_error?(response)
+        end
+
+        0
+    end
+end

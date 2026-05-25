@@ -1,0 +1,91 @@
+# Copyright 2018 www.privaz.io Valletech AB
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Always prefer setuptools over distutils
+from setuptools import setup, find_packages
+# To use a consistent encoding
+from codecs import open
+from os import path
+import sys
+
+here = path.abspath(path.dirname(__file__))
+
+install_requires = [
+    'lxml',
+    'dict2xml',
+    'xmltodict',
+    'tblib',
+    'requests',
+    'grpcio',
+]
+
+# include future in python2
+if sys.version_info[0] < 3:
+    install_requires.append('future')
+
+version = '7.3.80'
+
+# mark pre-release
+v1 = int(version.split('.')[1])
+v2 = int(version.split('.')[2])
+
+if v1 >= 90 or v2 >= 90:
+    pyone_version = version + 'rc1'
+elif v1 >= 80 or v2 >= 80:
+    pyone_version = version + 'b1'
+else:
+    pyone_version = version
+
+setup(
+    name='pyone',
+    version=pyone_version,
+    description='Python Bindings for OpenNebula XML-RPC API',
+    python_requires='>=3.9',
+    long_description='''PyOne is an implementation of OpenNebula XML-RPC
+        bindings in Python. It works as a proxy over the XML-RPC api and
+        utilizes generateDS (https://www.davekuhlman.org/generateDS.html)
+        to ecapsulate the xml response to Python objects.''',
+
+    # The project's main homepage.
+    url='http://opennebula.io',
+
+    # Author details
+    author='Rafael del Valle',
+    author_email='rvalle@privaz.io',
+
+    # Choose your license
+    license='Apache-2.0',
+    license_files=['LICENSE'],
+    classifiers=[
+        'Development Status :: 4 - Beta',
+        'Intended Audience :: Developers',
+        'Topic :: Software Development :: Build Tools',
+        'License :: OSI Approved :: Apache Software License',
+        'Programming Language :: Python :: 3'
+    ],
+
+    keywords='cloud opennebula xmlrpc bindings',
+    packages=find_packages(where='.', include=['pyone*']),
+    install_requires=install_requires,
+    extras_require={
+        'dev': ['check-manifest'],
+        'test': ['coverage'],
+        'build': [
+            'generateDS',
+            'grpcio-tools',
+        ],
+    },
+    test_suite="tests"
+)

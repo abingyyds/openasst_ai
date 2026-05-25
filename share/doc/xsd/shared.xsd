@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified"
+  targetNamespace="http://opennebula.org/XMLSchema" xmlns="http://opennebula.org/XMLSchema">
+  <xs:complexType name="LOCK">
+    <xs:sequence>
+      <xs:element name="LOCKED" type="xs:integer"/>
+      <xs:element name="OWNER" type="xs:integer" minOccurs="0" maxOccurs="1"/>
+      <xs:element name="TIME" type="xs:integer" minOccurs="0" maxOccurs="1"/>
+      <xs:element name="REQ_ID" type="xs:integer" minOccurs="0" maxOccurs="1"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="PERMISSIONS">
+    <xs:sequence>
+      <xs:element name="OWNER_U" type="xs:integer"/>
+      <xs:element name="OWNER_M" type="xs:integer"/>
+      <xs:element name="OWNER_A" type="xs:integer"/>
+      <xs:element name="GROUP_U" type="xs:integer"/>
+      <xs:element name="GROUP_M" type="xs:integer"/>
+      <xs:element name="GROUP_A" type="xs:integer"/>
+      <xs:element name="OTHER_U" type="xs:integer"/>
+      <xs:element name="OTHER_M" type="xs:integer"/>
+      <xs:element name="OTHER_A" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="IDS">
+    <xs:sequence>
+      <xs:element name="ID" type="xs:integer" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="SCHED_ACTION">
+    <xs:sequence>
+      <xs:element name="ID" type="xs:integer"/>
+      <xs:element name="PARENT_ID" type="xs:integer"/>
+      <xs:element name="TYPE" type="xs:string"/>
+      <xs:element name="ACTION" type="xs:string"/>
+      <xs:element name="ARGS" type="xs:string"/>
+      <xs:element name="TIME" type="xs:string"/>
+      <xs:element name="REPEAT" type="xs:integer"/>
+      <xs:element name="DAYS" type="xs:string"/>
+      <xs:element name="END_TYPE" type="xs:integer"/>
+      <xs:element name="END_VALUE" type="xs:integer"/>
+      <xs:element name="DONE" type="xs:integer"/>
+      <xs:element name="MESSAGE" type="xs:string"/>
+      <xs:element name="WARNING" type="xs:integer"/>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="DATASTORE_QUOTA">
+    <xs:sequence>
+      <xs:element name="DATASTORE" minOccurs="0" maxOccurs="unbounded">
+      <xs:complexType>
+        <xs:sequence>
+          <xs:element name="ID" type="xs:string"/>
+          <xs:element name="IMAGES" type="xs:string"/>
+          <xs:element name="IMAGES_USED" type="xs:string"/>
+          <xs:element name="SIZE" type="xs:string"/>
+          <xs:element name="SIZE_USED" type="xs:string"/>
+        </xs:sequence>
+      </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="NETWORK_QUOTA">
+    <xs:sequence>
+      <xs:element name="NETWORK" minOccurs="0" maxOccurs="unbounded">
+      <xs:complexType>
+        <xs:sequence>
+          <xs:element name="ID" type="xs:string"/>
+          <xs:element name="LEASES" type="xs:string"/>
+          <xs:element name="LEASES_USED" type="xs:string"/>
+        </xs:sequence>
+      </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="VM_QUOTA">
+    <xs:sequence>
+      <xs:element name="VM" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="CLUSTER_IDS" type="xs:string" minOccurs="0"/>
+            <xs:element name="CPU" type="xs:string"/>
+            <xs:element name="CPU_USED" type="xs:string"/>
+            <xs:element name="MEMORY" type="xs:string"/>
+            <xs:element name="MEMORY_USED" type="xs:string"/>
+            <xs:element name="PCI_DEV" type="xs:string"/>
+            <xs:element name="PCI_DEV_USED" type="xs:string"/>
+            <xs:element name="PCI_NIC" type="xs:string"/>
+            <xs:element name="PCI_NIC_USED" type="xs:string"/>
+            <xs:element name="RUNNING_CPU" type="xs:string"/>
+            <xs:element name="RUNNING_CPU_USED" type="xs:string"/>
+            <xs:element name="RUNNING_MEMORY" type="xs:string"/>
+            <xs:element name="RUNNING_MEMORY_USED" type="xs:string"/>
+            <xs:element name="RUNNING_PCI_DEV" type="xs:string"/>
+            <xs:element name="RUNNING_PCI_DEV_USED" type="xs:string"/>
+            <xs:element name="RUNNING_PCI_NIC" type="xs:string"/>
+            <xs:element name="RUNNING_PCI_NIC_USED" type="xs:string"/>
+            <xs:element name="RUNNING_VMS" type="xs:string"/>
+            <xs:element name="RUNNING_VMS_USED" type="xs:string"/>
+            <xs:element name="SYSTEM_DISK_SIZE" type="xs:string"/>
+            <xs:element name="SYSTEM_DISK_SIZE_USED" type="xs:string"/>
+            <xs:element name="VMS" type="xs:string"/>
+            <xs:element name="VMS_USED" type="xs:string"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+  <xs:complexType name="IMAGE_QUOTA">
+    <xs:sequence>
+      <xs:element name="IMAGE" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="ID" type="xs:string"/>
+            <xs:element name="RVMS" type="xs:string"/>
+            <xs:element name="RVMS_USED" type="xs:string"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

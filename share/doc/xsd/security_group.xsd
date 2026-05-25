@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns="http://opennebula.org/XMLSchema" elementFormDefault="qualified" targetNamespace="http://opennebula.org/XMLSchema">
+  <xs:include schemaLocation="shared.xsd"/>
+  <xs:element name="SECURITY_GROUP">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="ID" type="xs:integer"/>
+        <xs:element name="UID" type="xs:integer"/>
+        <xs:element name="GID" type="xs:integer"/>
+        <xs:element name="UNAME" type="xs:string"/>
+        <xs:element name="GNAME" type="xs:string"/>
+        <xs:element name="NAME" type="xs:string"/>
+        <xs:element name="PERMISSIONS" type="PERMISSIONS"/>
+        <xs:element name="UPDATED_VMS" type="IDS"/>
+        <xs:element name="OUTDATED_VMS" type="IDS"/>
+        <xs:element name="UPDATING_VMS" type="IDS"/>
+        <xs:element name="ERROR_VMS" type="IDS"/>
+        <xs:element name="TEMPLATE">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="DESCRIPTION" type="xs:string" minOccurs="0" maxOccurs="1"/>
+              <xs:element name="RULE" maxOccurs="unbounded" minOccurs="0">
+                <xs:complexType>
+                  <xs:sequence>
+                    <xs:element name="PROTOCOL" type="xs:string"/>
+                    <xs:element name="RULE_TYPE" type="xs:string"/>
+                  </xs:sequence>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

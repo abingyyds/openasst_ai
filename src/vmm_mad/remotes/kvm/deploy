@@ -1,0 +1,131 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+source $(dirname $0)/../../etc/vmm/kvm/kvmrc
+source $(dirname $0)/../../scripts_common.sh
+
+DEP_FILE=$1
+DEP_FILE_LOCATION=$(dirname $DEP_FILE)
+
+mkdir -p $DEP_FILE_LOCATION
+cat > $DEP_FILE
+
+#-------------------------------------------------------------------------------
+# Resolve disk.<disk_id> links for file-based disks
+#-------------------------------------------------------------------------------
+FILES=$(xmllint  --xpath '//disk[@type="file" and @device="disk"]/source/@file' \
+         "${DEP_FILE}" | sed -e 's/file=/\n/g' | tr -d '"')
+
+SED_SCRIPT=""
+
+while IFS= read -r f; do
+    f=$(echo ${f} | sed 's/[[:space:]]*$//')
+
+    if ! [[ "${f}" =~ .*/disk\.[0-9]+$ ]]; then
+        continue
+    fi
+
+    [ ! -L "${f}" ] && continue
+
+    rl=$(readlink ${f})
+
+    if [ "${rl:0:1}" != "/" ]; then
+        rl="$(dirname ${f})/${rl}"
+    fi
+
+    [ ! -e "${rl}" ] && continue
+
+    SED_SCRIPT="s#source file='${f}'#source file='${rl}'#g;${SED_SCRIPT}"
+done <<< ${FILES}
+
+sed -i "${SED_SCRIPT}" "${DEP_FILE}"
+
+#-------------------------------------------------------------------------------
+# Compact memory
+#-------------------------------------------------------------------------------
+if [ "x$CLEANUP_MEMORY_ON_START" = "xyes" ]; then
+    (sudo -l | grep -q sysctl) && sudo -n sysctl vm.drop_caches=3 vm.compact_memory=1 >/dev/null
+fi
+
+#-------------------------------------------------------------------------------
+# Create non-volatile memory to store firmware variables and convert if needed
+#-------------------------------------------------------------------------------
+nvram="$(xmllint --xpath '/domain/os/nvram/text()' $DEP_FILE 2>/dev/null)"
+nvram_fmt="$(xmllint --xpath 'string(/domain/os/nvram/@format)' "$DEP_FILE" 2>/dev/null)"
+if [ -n "${nvram}" ]; then
+    mkdir -p "$(dirname "$nvram")"
+
+    if [ -z "$nvram_fmt" ]; then
+        nvram_fmt="raw"
+    fi
+
+    fmt="$(qemu-img info -U --output=json "$OVMF_NVRAM" | jq -r '.format')"
+
+    if [ "$fmt" != "$nvram_fmt" ]; then
+        qemu-img convert -O "$nvram_fmt" "$OVMF_NVRAM" "$nvram"
+    else
+        cp -n "$OVMF_NVRAM" "$nvram"
+    fi
+fi
+
+#-------------------------------------------------------------------------------
+# Create vGPU following NVIDIA official guide:
+#     https://docs.nvidia.com/grid/latest/pdf/grid-vgpu-user-guide.pdf
+#-------------------------------------------------------------------------------
+(sudo -l | grep -q vgpu) && sudo /var/tmp/one/vgpu "CREATE" "$DEP_FILE_LOCATION/vm.xml"
+
+#---------------------------------------------------------------------------
+# Recover vTPM directory
+#---------------------------------------------------------------------------
+
+# If there's no saved TPM, try to get it from template (after backup restores)
+if [ ! -d "$DEP_FILE_LOCATION/tpm" ]; then
+    {
+        xmllint --nocdata --xpath 'VM/USER_TEMPLATE/TPM_STATE/text()' "$DEP_FILE_LOCATION/vm.xml" \
+            | base64 -d | tar zxf - -C "$DEP_FILE_LOCATION";
+    } 2> /dev/null || true
+fi
+
+# If there's a saved TPM, copy it to libvirt's directory
+if [ -d "$DEP_FILE_LOCATION/tpm" ]; then
+    DOM_UUID=$(xmllint --xpath '/domain/uuid/text()' "$DEP_FILE")
+    (sudo -l | grep -q vtpm_setup) && sudo /var/tmp/one/vtpm_setup recover "$DOM_UUID" "$DEP_FILE_LOCATION"
+fi
+
+DATA=`virsh --connect $LIBVIRT_URI create $DEP_FILE`
+
+if [ "x$?" != "x0" ]; then
+    error_message "Could not create domain from $DEP_FILE"
+    exit -1
+fi
+
+DOMAIN_ID=$(xmllint --xpath '/domain/name/text()' "$DEP_FILE")
+UUID=$(virsh --connect $LIBVIRT_URI dominfo $DOMAIN_ID | awk '/UUID:/ {print $2}')
+
+echo $UUID
+
+#---------------------------------------------------------------------------
+# redefine potential snapshots
+#---------------------------------------------------------------------------
+for SNAPSHOT_MD_XML in $(ls -v ${DEP_FILE_LOCATION}/snap-*.xml 2>/dev/null); do
+    # replace uuid in the snapshot metadata xml
+    sed -i "s%<uuid>[[:alnum:]-]*</uuid>%<uuid>$UUID</uuid>%" $SNAPSHOT_MD_XML
+
+    # redefine the snapshot using the xml metadata file
+    virsh --connect $LIBVIRT_URI snapshot-create $DOMAIN_ID $SNAPSHOT_MD_XML --redefine > /dev/null || true
+done

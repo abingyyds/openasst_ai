@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+# snap_create host:parent_image snap_id vmid ds_id
+
+set -e -o pipefail
+
+VMID=$1
+DISK_PATH=$2
+FREQ=$3
+REPLICA_HOST=$4
+
+DRIVER_PATH=$(dirname $0)
+source ${DRIVER_PATH}/../../etc/vmm/kvm/kvmrc
+source ${DRIVER_PATH}/../../etc/tm/ssh/sshrc
+source ${DRIVER_PATH}/../../scripts_common.sh
+
+mkdir -p "${DISK_PATH}.snap"
+SNAP_PATH="${DISK_PATH}.snap/rs_tmp"
+DISK_NAME="$(basename $DISK_PATH)"
+REAL_DISK="$(dirname $DISK_PATH)/$(readlink $DISK_PATH)"
+
+if ! virsh -c ${LIBVIRT_URI} domblkinfo one-${VMID} "$REAL_DISK" &>/dev/null; then
+    # not a real disk in domain blockdevice -> upgrade to 6.6.3 or higher detected
+    REAL_DISK="$DISK_PATH"
+fi
+
+if [ -f $SNAP_PATH ]; then
+    SNAP_OLD=$(stat -c "%Y" $SNAP_PATH)
+
+    if [ "$(( $(date +%s) - SNAP_OLD ))" -lt "$FREQ" ]; then
+        echo "$SNAP_OLD"
+        exit 0
+    else
+        # if rs_tmp is found in domain block devices -> last time
+        # the blockcommit failed, try again now and exit
+        if virsh -c ${LIBVIRT_URI} domblklist one-${VMID} | grep "snap/rs_tmp" ; then
+            virsh -c ${LIBVIRT_URI} blockcommit one-${VMID} $SNAP_PATH \
+                --base $REAL_DISK \
+                --top $SNAP_PATH \
+                --active --pivot --wait >/dev/null
+
+            exit 1
+        else
+            rm $SNAP_PATH
+        fi
+    fi
+fi
+
+if [ ! -L $DISK_PATH ]; then
+    echo "$DISK_PATH not a symlink"
+    exit 1
+fi
+
+# skip if VM is not running
+if [ "$(virsh -c ${LIBVIRT_URI} domstate one-${VMID} 2>/dev/null)" != "running" ]; then
+    echo "VM ${VMID} is not running"
+    exit 1
+fi
+
+# Enumerate disks for which we don't create snapshot (all except $DISK_PATH)
+DISKS=$(virsh -c ${LIBVIRT_URI} domblklist one-${VMID} | grep disk | awk '{print $2}')
+OTHER_DISK_STR=""
+for DISK in $DISKS; do
+    [ "$DISK" = "$REAL_DISK" ] && continue
+
+    OTHER_DISK_STR+="--diskspec $DISK,snapshot=no "
+done
+
+# saves disk changes to base.1 moves active snap to rs_tmp
+# paths needs to absolute, otherwise snapshot-create and blockcommit fails
+touch $SNAP_PATH
+SNAP_CMD=$(cat <<EOF
+    virsh -c ${LIBVIRT_URI} snapshot-create-as one-${VMID} recovery_snap \
+    --diskspec $REAL_DISK,file=$SNAP_PATH \
+    $OTHER_DISK_STR \
+    --disk-only --atomic --no-metadata
+EOF
+)
+
+# try with quiesce first (needs guest agent)
+$SNAP_CMD --quiesce >/dev/null || $SNAP_CMD >/dev/null
+
+# Once recovery_snap is created, always do blockcommit before end -> use trap
+# reduce the backing-chain using blockcommit
+# base <- base.1 <- rs_tmp is reduced to base <- base.1
+# outdated rs_tmp is deleted next cycle
+trap "virsh -c ${LIBVIRT_URI} blockcommit one-${VMID} $SNAP_PATH \
+    --base $REAL_DISK \
+    --top $SNAP_PATH \
+    --active --pivot --wait >/dev/null" EXIT
+
+# copy base.1 to the replica
+ssh $REPLICA_HOST "mkdir -p $REPLICA_RECOVERY_SNAPS_DIR/$VMID/$DISK_NAME.snap"
+rsync -q $REAL_DISK \
+     $REPLICA_HOST:$REPLICA_RECOVERY_SNAPS_DIR/$VMID/$DISK_NAME.snap/ > /dev/null
+
+stat -c "%Y" $SNAP_PATH

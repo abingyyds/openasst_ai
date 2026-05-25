@@ -1,0 +1,107 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2026, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+    VMDIR             = '/var/lib/one'
+    CONFIG_FILE       = '/var/lib/one/config'
+else
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+    VMDIR             = ONE_LOCATION + '/var'
+    CONFIG_FILE       = ONE_LOCATION + '/var/config'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+require 'load_opennebula_paths'
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+
+require_relative 'opennebula_vm'
+require_relative '../lib/command'
+
+include VirtualMachineManagerKVM
+
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+def attached?(dom, mac)
+    cmd = "#{virsh} domiflist #{dom} | grep #{mac} > /dev/null 2>&1"
+    rc, _o, _e = Command.execute('bash -s', false, 0, :stdin_data => cmd)
+
+    rc == 0
+end
+
+def detach_interface(dom, mac)
+    cmd = "#{virsh} detach-interface --domain #{dom} --type bridge --mac #{mac}"
+    rc, _o, e = Command.execute('bash -s', false, 0, :stdin_data => cmd)
+
+    STDERR.puts "Error detaching interface (#{mac}): #{e}" if rc != 0
+
+    rc == 0
+end
+
+def detach_nic(dom, mac)
+    tries = ENV['VIRSH_RETRIES']
+    tries ||= 3
+
+    tries.to_i.times do
+        detach_interface(dom, mac)
+
+        break 0 unless attached?(dom, mac)
+    end
+end
+
+def detach_device(dom, dev_xml)
+    cmd =<<~EOS
+        #{virsh} detach-device #{dom} <(
+        cat <<EOT
+        #{dev_xml}
+        EOT
+        )
+    EOS
+
+    rc, _o, e = Command.execute('bash -s', false, 0, :stdin_data => cmd)
+
+    STDERR.puts "Could not detach device from #{dom}: #{e}" if rc != 0
+
+    rc
+end
+
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+
+load_remote_env
+
+domain = ARGV[0]
+mac    = ARGV[1]
+
+vm = KvmVM.new(STDIN.read)
+
+if vm.pci_attach?
+    rc = detach_device(domain, vm.hostdev_xml(:force_hostdev => true))
+elsif vm.dpdk_interface?(mac)
+    rc = detach_device(domain, vm.dpdk_interface_xml(mac))
+else
+    rc = detach_nic(domain, mac)
+end
+
+exit(rc)

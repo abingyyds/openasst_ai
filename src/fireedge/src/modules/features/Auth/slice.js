@@ -1,0 +1,70 @@
+/* ------------------------------------------------------------------------- *
+ * Copyright 2002-2026, OpenNebula Project, OpenNebula Systems               *
+ *                                                                           *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may   *
+ * not use this file except in compliance with the License. You may obtain   *
+ * a copy of the License at                                                  *
+ *                                                                           *
+ * http://www.apache.org/licenses/LICENSE-2.0                                *
+ *                                                                           *
+ * Unless required by applicable law or agreed to in writing, software       *
+ * distributed under the License is distributed on an "AS IS" BASIS,         *
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  *
+ * See the License for the specific language governing permissions and       *
+ * limitations under the License.                                            *
+ * ------------------------------------------------------------------------- */
+import { createAction, createSlice } from '@reduxjs/toolkit'
+
+import { FILTER_POOL } from '@ConstantsModule'
+
+const initial = () => ({
+  user: undefined,
+  filterPool: FILTER_POOL.ALL_RESOURCES,
+  isLoginInProgress: false,
+  externalRedirect: '',
+  sessionVerified: false,
+  isLoggedIn: false,
+})
+
+const slice = createSlice({
+  name: 'auth',
+  initialState: { ...initial() },
+  reducers: {
+    changeAuthUser: (state, { payload: { isLoginInProgress, ...user } }) => {
+      state.user = { ...state.user, ...user }
+      if (user?.ID) {
+        state.isLoggedIn = true
+      }
+
+      if (isLoginInProgress !== undefined) {
+        state.isLoginInProgress = isLoginInProgress
+      }
+    },
+    changeExternalRedirect: (state, { payload }) => {
+      state.externalRedirect = payload
+    },
+    changeFilterPool: (state, { payload: filterPool }) => {
+      state.filterPool = filterPool
+      state.isLoginInProgress = false
+    },
+    changeView: (state, { payload }) => {
+      state.view = payload
+    },
+    setErrorMessage: (state, { payload }) => {
+      state.error = payload
+    },
+    setSessionVerified: (state) => {
+      state.sessionVerified = true
+    },
+  },
+  extraReducers: (builder) => {
+    builder.addCase(logout, (state, { payload }) => ({
+      ...initial(),
+      sessionVerified: state.sessionVerified,
+      error: payload,
+    }))
+  },
+})
+
+export const logout = createAction('logout')
+export { slice as AuthSlice }
