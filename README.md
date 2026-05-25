@@ -41,6 +41,8 @@ Demo 账号：
 - 用户：`demo@openasst.ai` / `demo123`
 - 管理员：`admin@openasst.ai` / `admin123`
 
+生产环境中需要设置 `BOOTSTRAP_ADMIN_PASSWORD`；`SEED_DEMO_USER` 默认关闭，避免公开部署创建固定密码 Demo 用户。
+
 ## 当前 Runtime 说明
 
 本机环境未检测到 Docker，因此第一阶段本地实现使用 `local-sandbox` Runtime：

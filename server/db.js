@@ -395,18 +395,24 @@ export function runMigrations() {
 
 export function seedDefaults() {
   const stamp = now();
-  const hash = bcrypt.hashSync("demo123", 10);
-  const adminHash = bcrypt.hashSync("admin123", 10);
+  if (!config.bootstrapAdminPassword) {
+    throw new Error("BOOTSTRAP_ADMIN_PASSWORD must be set when NODE_ENV=production");
+  }
+
+  if (config.seedDemoUser) {
+    const demoHash = bcrypt.hashSync(config.demoPassword, 10);
+    db.prepare(`
+      INSERT OR IGNORE INTO users (id, email, password_hash, role, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run("usr_demo", config.demoEmail, demoHash, "user", stamp);
+  }
+
+  const adminHash = bcrypt.hashSync(config.bootstrapAdminPassword, 10);
 
   db.prepare(`
     INSERT OR IGNORE INTO users (id, email, password_hash, role, created_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run("usr_demo", "demo@openasst.ai", hash, "user", stamp);
-
-  db.prepare(`
-    INSERT OR IGNORE INTO users (id, email, password_hash, role, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run("usr_admin", "admin@openasst.ai", adminHash, "admin", stamp);
+  `).run("usr_admin", config.bootstrapAdminEmail, adminHash, "admin", stamp);
 
   const templates = [
     {

@@ -11,6 +11,14 @@ export const config = {
   publicBaseUrl: process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.PORT || 4000}`,
   jwtSecret: process.env.JWT_SECRET || "dev-openasstai-jwt-secret-change-me",
   secretKey: process.env.SECRET_KEY || "dev-openasstai-secret-key-change-me",
+  bootstrapAdminEmail: process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@openasst.ai",
+  bootstrapAdminPassword:
+    process.env.BOOTSTRAP_ADMIN_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "admin123"),
+  seedDemoUser: process.env.SEED_DEMO_USER
+    ? process.env.SEED_DEMO_USER === "true"
+    : process.env.NODE_ENV !== "production",
+  demoEmail: process.env.DEMO_EMAIL || "demo@openasst.ai",
+  demoPassword: process.env.DEMO_PASSWORD || "demo123",
   databasePath: path.resolve(rootDir, process.env.DATABASE_PATH || "data/openasstai.sqlite"),
   runtimeWorkspaceDir: path.resolve(
     rootDir,
