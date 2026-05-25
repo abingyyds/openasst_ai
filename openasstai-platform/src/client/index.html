@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>OpenAsstAI 控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="app-shell">
+        <aside class="sidebar" aria-label="产品导航">
+          <div class="brand">
+            <span class="brand-mark">O</span>
+            <span class="brand-text">OpenAsstAI</span>
+          </div>
+          <nav class="nav-list" id="nav-list"></nav>
+        </aside>
+
+        <main class="workspace">
+          <header class="topbar">
+            <button class="icon-button mobile-menu" id="mobile-menu" aria-label="打开导航">
+              <span></span>
+              <span></span>
+              <span></span>
+            </button>
+            <label class="agent-search" for="agent-search">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input id="agent-search" type="search" placeholder="搜索 Agent、实例ID、IP、名称" autocomplete="off" />
+              <kbd>/</kbd>
+            </label>
+            <div class="topbar-actions">
+              <button class="ghost-button">费用中心</button>
+              <button class="ghost-button">工单</button>
+              <div class="avatar" aria-label="当前用户">开</div>
+            </div>
+          </header>
+
+          <div class="mobile-nav" id="mobile-nav"></div>
+          <section class="search-popover hidden" id="search-popover" aria-live="polite"></section>
+
+          <section class="page">
+            <div class="breadcrumb">控制台 / 我的 Agent / 实例详情</div>
+            <section class="instance-hero" id="instance-hero">
+              <div>
+                <div class="eyebrow">Agent 实例</div>
+                <h1>加载中</h1>
+                <div class="hero-meta"></div>
+              </div>
+              <div class="hero-actions">
+                <button class="primary-button" id="assistant-action">AI助手</button>
+                <button class="secondary-button" id="more-action">更多操作</button>
+              </div>
+            </section>
+
+            <section class="metrics-grid" id="metrics-grid"></section>
+
+            <section class="content-grid">
+              <article class="panel agent-panel" id="agent-panel"></article>
+              <aside class="side-stack">
+                <article class="panel" id="network-panel"></article>
+                <article class="panel" id="logs-panel"></article>
+              </aside>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

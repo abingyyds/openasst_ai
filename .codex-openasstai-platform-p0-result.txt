@@ -1,0 +1,14 @@
+Implemented the isolated P0 platform shell under [openasstai-platform](/Users/minihanshi/project/openasstai/openasstai-platform), with mock APIs, a Railway-friendly Node server, Simplified Chinese console UI, Hermes Agent instance detail page, env example, deploy docs, and OpenNebula adapter stubs.
+
+Verification:
+- `npm install` passed.
+- `npm run build` passed.
+- `node --check` passed for source and built server/client files.
+- `npm start` was attempted with `PORT=3210`, but this sandbox blocks local socket binding with `listen EPERM` even on `127.0.0.1`; the app code still binds to `0.0.0.0:$PORT` for Railway.
+
+Wrote the requested report to [.codex-openasstai-platform-p0-result.txt](/Users/minihanshi/project/openasstai/.codex-openasstai-platform-p0-result.txt).
+
+Git status highlights:
+- New untracked: `.codex-openasstai-platform-p0-result.txt`, `openasstai-platform/`
+- Existing unrelated untracked Codex logs/mission files are still present and untouched.
+- `git diff --stat` is empty because the new files are untracked; source file line count for the new app excluding `dist/` is `1986`, plus `87` lines in the result report.

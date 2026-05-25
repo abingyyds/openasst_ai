@@ -1,0 +1,12 @@
+Implemented under `openasstai-platform` only.
+
+Changed the UI to Agent-first: required nav only, Agent search placeholder, `/api/agents/search`, and runtime details shown as `Agent 运行环境 / 承载实例` instead of cloud products. Added [railway.json](/Users/minihanshi/project/openasstai/openasstai-platform/railway.json:1) with Railpack build, `npm start`, and `/api/health`; README now documents Railway root directory `openasstai-platform`.
+
+Verification:
+- `npm run build`: passed
+- `node --check src/server/index.js`: passed
+- `node --check dist/server/index.js`: passed
+- forbidden-label scan across `src`, `dist`, README/config/env/scripts: no matches
+- `PORT=3210 npm start`: blocked by sandbox with `listen EPERM 0.0.0.0:3210`, so curl could not run here. Code does bind `0.0.0.0` and `process.env.PORT || 3000`, and `/api/health` returns JSON with `ok: true`.
+
+Wrote the required report to [.codex-openasstai-platform-agent-first-fix-result.txt](/Users/minihanshi/project/openasstai/.codex-openasstai-platform-agent-first-fix-result.txt:1). No commit or push. Railway config shape was checked against Railway’s Config as Code docs: https://docs.railway.com/config-as-code/reference
