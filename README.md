@@ -43,6 +43,8 @@ Demo 账号：
 
 生产环境中需要设置 `BOOTSTRAP_ADMIN_PASSWORD`；`SEED_DEMO_USER` 默认关闭，避免公开部署创建固定密码 Demo 用户。
 
+Railway 部署时建议给服务挂载一个 Volume。应用会自动使用 Railway 提供的 `RAILWAY_VOLUME_MOUNT_PATH` 保存 SQLite 数据库和实例工作区；如果不挂载 Volume，部署重建后本地写入数据会丢失。
+
 ## 当前 Runtime 说明
 
 本机环境未检测到 Docker，因此第一阶段本地实现使用 `local-sandbox` Runtime：
