@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { server } from "../index.js";
 import { createId, db, now } from "../db.js";
 import { signToken } from "../security.js";
@@ -52,10 +54,14 @@ try {
     role: "user",
     created_at: now()
   };
-  db.prepare("INSERT INTO users (id, email, password_hash, role, created_at) VALUES (?, ?, 'phase1-smoke', ?, ?)")
-    .run(user.id, user.email, user.role, user.created_at);
+  await db.run("INSERT INTO users (id, email, password_hash, role, created_at) VALUES (?, ?, 'phase1-smoke', ?, ?)",
+    user.id,
+    user.email,
+    user.role,
+    user.created_at
+  );
 
-  const admin = db.prepare("SELECT id, email, role, created_at FROM users WHERE id = 'usr_admin'").get();
+  const admin = await db.get("SELECT id, email, role, created_at FROM users WHERE id = 'usr_admin'");
   assert.ok(admin, "missing seeded admin user");
 
   const userToken = signToken(user);
@@ -103,8 +109,10 @@ try {
   // Keep this smoke hermetic on long-running verification DBs that may contain
   // healthy provider nodes from prior cron ticks; the assertion below verifies
   // this newly published node is the one that receives the provision/chat tasks.
-  db.prepare("UPDATE nodes SET status = 'offline', updated_at = ? WHERE type = 'provider' AND id != ?")
-    .run(now(), nodeResponse.node.id);
+  await db.run("UPDATE nodes SET status = 'offline', updated_at = ? WHERE type = 'provider' AND id != ?",
+    now(),
+    nodeResponse.node.id
+  );
 
   const registeredNode = (await api("/api/node/register", {
     nodeToken,
@@ -260,7 +268,7 @@ try {
   const localChatMessages = (await api(`/api/instances/${localInstance.id}/chat`, { token: userToken })).payload.messages;
   assert.ok(localChatMessages.some((message) => message.role === "assistant" && message.content.includes("processed your Web Chat turn")));
 
-  const taskRows = db.prepare("SELECT action, status FROM node_tasks WHERE instance_id = ? ORDER BY created_at ASC").all(createdInstance.id);
+  const taskRows = await db.all("SELECT action, status FROM node_tasks WHERE instance_id = ? ORDER BY created_at ASC", createdInstance.id);
   console.log(JSON.stringify({
     ok: true,
     providerId: provider.id,
@@ -271,4 +279,5 @@ try {
   }, null, 2));
 } finally {
   await close(listener);
+  await db.close();
 }

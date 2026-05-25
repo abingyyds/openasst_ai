@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { app } from "../index.js";
-import { db, fromJson } from "../db.js";
+import { db, fromJson, tableColumns, tableExists } from "../db.js";
 import { config } from "../config.js";
 import { verifyPassword } from "../security.js";
 
@@ -40,7 +40,7 @@ for (const [method, path] of requiredRoutes) {
   assert.equal(hasRoute(method, path), true, `missing route ${method.toUpperCase()} ${path}`);
 }
 
-const users = db.prepare("SELECT email, password_hash, role FROM users ORDER BY role, email").all();
+const users = await db.all("SELECT email, password_hash, role FROM users ORDER BY role, email");
 const demoUser = users.find((user) => user.email === config.demoEmail.toLowerCase());
 const adminUser = users.find((user) => user.email === config.bootstrapAdminEmail.toLowerCase());
 assert.ok(demoUser && demoUser.role === "user", "missing demo user");
@@ -48,12 +48,12 @@ assert.ok(adminUser && adminUser.role === "admin", "missing admin user");
 assert.equal(verifyPassword(config.demoPassword, demoUser.password_hash), true, "demo password does not match seed config");
 assert.equal(verifyPassword(config.bootstrapAdminPassword, adminUser.password_hash), true, "admin password does not match seed config");
 
-const templates = db.prepare(`
+const templates = await db.all(`
   SELECT id, install_method, runtime_kind, install_command, start_command, health_check, config_hints_json
   FROM agent_templates
   WHERE status = 'active'
   ORDER BY id
-`).all();
+`);
 assert.ok(templates.length >= 2, "expected at least two active templates");
 
 for (const template of templates.filter((row) => row.id === "tpl_hermes_research" || row.id === "tpl_openclaw_ops")) {
@@ -67,13 +67,13 @@ for (const template of templates.filter((row) => row.id === "tpl_hermes_research
 
 const providerTables = ["provider_profiles", "node_tasks", "provider_ledger_entries"];
 for (const table of providerTables) {
-  const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  assert.ok(exists, `missing table ${table}`);
+  assert.equal(await tableExists(table), true, `missing table ${table}`);
 }
 
-const nodeColumns = new Set(db.prepare("PRAGMA table_info(nodes)").all().map((column) => column.name));
+const nodeColumns = await tableColumns("nodes");
 for (const column of ["provider_profile_id", "agent_token_hash", "docker_status", "price_per_hour_cents"]) {
   assert.ok(nodeColumns.has(column), `nodes missing column ${column}`);
 }
 
 console.log("Smoke checks passed.");
+await db.close();

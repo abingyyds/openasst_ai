@@ -1,4 +1,5 @@
-import { initDatabase } from "../db.js";
+import { db, initDatabase } from "../db.js";
 
-initDatabase();
+await initDatabase();
 console.log("Database seeded.");
+await db.close();

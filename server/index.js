@@ -28,7 +28,7 @@ import {
 } from "./security.js";
 import { provisionWorkspace, workspacePathFor } from "./runtime/localSandbox.js";
 
-initDatabase();
+await initDatabase();
 fs.mkdirSync(config.runtimeWorkspaceDir, { recursive: true });
 
 const app = express();
@@ -53,14 +53,20 @@ function sendError(res, status, message, details = null) {
   res.status(status).json({ error: { message, details } });
 }
 
-function requireAuth(req, res, next) {
+function backgroundWrite(promise) {
+  promise.catch((error) => {
+    console.error("background write failed:", error);
+  });
+}
+
+async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return sendError(res, 401, "需要登录");
 
   try {
     const payload = verifyToken(token);
-    const user = db.prepare("SELECT id, email, role, created_at FROM users WHERE id = ?").get(payload.sub);
+    const user = await db.get("SELECT id, email, role, created_at FROM users WHERE id = ?", payload.sub);
     if (!user) return sendError(res, 401, "登录已失效");
     req.user = user;
     next();
@@ -74,26 +80,26 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-function getProviderProfileByUserId(userId) {
-  return db.prepare(`
+async function getProviderProfileByUserId(userId) {
+  return await db.get(`
     SELECT p.*, u.email AS user_email
     FROM provider_profiles p
     JOIN users u ON u.id = p.user_id
     WHERE p.user_id = ?
-  `).get(userId);
+  `, userId);
 }
 
-function getProviderProfileById(id) {
-  return db.prepare(`
+async function getProviderProfileById(id) {
+  return await db.get(`
     SELECT p.*, u.email AS user_email
     FROM provider_profiles p
     JOIN users u ON u.id = p.user_id
     WHERE p.id = ?
-  `).get(id);
+  `, id);
 }
 
-function getNodeById(nodeId) {
-  return db.prepare(`
+async function getNodeById(nodeId) {
+  return await db.get(`
     SELECT
       n.*,
       p.user_id AS provider_user_id,
@@ -106,13 +112,13 @@ function getNodeById(nodeId) {
     FROM nodes n
     LEFT JOIN provider_profiles p ON p.id = n.provider_profile_id
     WHERE n.id = ?
-  `).get(nodeId);
+  `, nodeId);
 }
 
-function getNodeByToken(token) {
+async function getNodeByToken(token) {
   if (!token) return null;
   const tokenHash = hashNodeToken(token);
-  return db.prepare(`
+  return await db.get(`
     SELECT
       n.*,
       p.user_id AS provider_user_id,
@@ -125,7 +131,7 @@ function getNodeByToken(token) {
     FROM nodes n
     LEFT JOIN provider_profiles p ON p.id = n.provider_profile_id
     WHERE n.agent_token_hash = ?
-  `).get(tokenHash);
+  `, tokenHash);
 }
 
 function parseNodeAuthToken(req) {
@@ -135,8 +141,8 @@ function parseNodeAuthToken(req) {
   return String(req.headers["x-node-token"] || raw || "");
 }
 
-function requireNodeAuth(req, res, next) {
-  const node = getNodeByToken(parseNodeAuthToken(req));
+async function requireNodeAuth(req, res, next) {
+  const node = await getNodeByToken(parseNodeAuthToken(req));
   if (!node) return sendError(res, 401, "节点令牌无效");
   req.node = node;
   next();
@@ -225,8 +231,8 @@ function serializeLedgerEntry(row) {
   };
 }
 
-function getInstance(instanceId, user) {
-  const row = db.prepare(`
+async function getInstance(instanceId, user) {
+  const row = await db.get(`
     SELECT
       i.*,
       t.name AS template_name,
@@ -251,15 +257,15 @@ function getInstance(instanceId, user) {
     JOIN price_plans p ON p.id = i.plan_id
     JOIN nodes n ON n.id = i.node_id
     WHERE i.id = ?
-  `).get(instanceId);
+  `, instanceId);
 
   if (!row) return null;
   if (user.role !== "admin" && row.user_id !== user.id) return null;
   return row;
 }
 
-function requireInstance(req, res, next) {
-  const instance = getInstance(req.params.id, req.user);
+async function requireInstance(req, res, next) {
+  const instance = await getInstance(req.params.id, req.user);
   if (!instance) return sendError(res, 404, "实例不存在");
   req.instance = instance;
   next();
@@ -306,33 +312,36 @@ function serializePlan(row) {
   };
 }
 
-function getTemplateWithPlans(templateId) {
-  const template = db.prepare("SELECT * FROM agent_templates WHERE id = ?").get(templateId);
+async function getTemplateWithPlans(templateId) {
+  const template = await db.get("SELECT * FROM agent_templates WHERE id = ?", templateId);
   if (!template) return null;
-  const plans = db.prepare("SELECT * FROM price_plans WHERE template_id = ? ORDER BY price_per_hour_cents ASC").all(templateId);
+  const plans = await db.all("SELECT * FROM price_plans WHERE template_id = ? ORDER BY price_per_hour_cents ASC", templateId);
   return { ...serializeTemplate(template), plans: plans.map(serializePlan) };
 }
 
-function getProviderTemplates(providerProfileId) {
-  const rows = db.prepare(`
+async function getProviderTemplates(providerProfileId) {
+  const rows = await db.all(`
     SELECT *
     FROM agent_templates
     WHERE provider_profile_id = ?
     ORDER BY created_at DESC
-  `).all(providerProfileId);
-  return rows.map((template) => ({
-    ...serializeTemplate(template),
-    plans: db.prepare("SELECT * FROM price_plans WHERE template_id = ? ORDER BY price_per_hour_cents ASC").all(template.id).map(serializePlan)
+  `, providerProfileId);
+  return await Promise.all(rows.map(async (template) => {
+    const plans = await db.all("SELECT * FROM price_plans WHERE template_id = ? ORDER BY price_per_hour_cents ASC", template.id);
+    return {
+      ...serializeTemplate(template),
+      plans: plans.map(serializePlan)
+    };
   }));
 }
 
-function estimateInstanceUsage(instance) {
-  const rows = db.prepare(`
+async function estimateInstanceUsage(instance) {
+  const rows = await db.all(`
     SELECT type, SUM(quantity) AS quantity, SUM(price_estimate_cents) AS price
     FROM usage_records
     WHERE instance_id = ?
     GROUP BY type
-  `).all(instance.id);
+  `, instance.id);
 
   const summary = {
     runtimeHours: 0,
@@ -364,7 +373,7 @@ function estimateInstanceUsage(instance) {
   return summary;
 }
 
-function estimateProviderEarnings(instance) {
+async function estimateProviderEarnings(instance) {
   if (instance.node_type !== "provider") {
     return {
       grossCents: 0,
@@ -374,7 +383,7 @@ function estimateProviderEarnings(instance) {
     };
   }
 
-  const rows = db.prepare(`
+  const rows = await db.get(`
     SELECT
       SUM(runtime_hours) AS runtime_hours,
       SUM(gross_cents) AS gross_cents,
@@ -382,7 +391,7 @@ function estimateProviderEarnings(instance) {
       SUM(provider_cents) AS provider_cents
     FROM provider_ledger_entries
     WHERE instance_id = ?
-  `).get(instance.id);
+  `, instance.id);
 
   let runtimeHours = Number(rows?.runtime_hours || 0);
   let grossCents = Number(rows?.gross_cents || 0);
@@ -407,7 +416,7 @@ function estimateProviderEarnings(instance) {
   };
 }
 
-function serializeInstance(row) {
+async function serializeInstance(row) {
   return {
     id: row.id,
     userId: row.user_id,
@@ -441,25 +450,30 @@ function serializeInstance(row) {
     errorReason: row.error_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    usage: estimateInstanceUsage(row),
-    providerEarnings: estimateProviderEarnings(row)
+    usage: await estimateInstanceUsage(row),
+    providerEarnings: await estimateProviderEarnings(row)
   };
 }
 
-function buildInstanceSetupStatus(instance) {
-  const model = db.prepare("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1").get(instance.id);
-  const channels = db.prepare("SELECT * FROM channel_configs WHERE instance_id = ? ORDER BY type ASC").all(instance.id);
-  const skills = db.prepare(`
+async function buildInstanceSetupStatus(instance) {
+  const model = await db.get("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1", instance.id);
+  const channels = await db.all("SELECT * FROM channel_configs WHERE instance_id = ? ORDER BY type ASC", instance.id);
+  const skills = await db.all(`
     SELECT si.*, s.name, s.slug
     FROM skill_installs si
     JOIN skills s ON s.id = si.skill_id
     WHERE si.instance_id = ?
     ORDER BY s.name ASC
-  `).all(instance.id);
+  `, instance.id);
   const webChat = channels.find((channel) => channel.type === "web_chat");
   const requiredSkillSlugs = fromJson(instance.template_default_skills_json, []);
   const enabledSkillSlugs = new Set(skills.filter((skill) => skill.status === "enabled").map((skill) => skill.slug));
   const requiredSkillsReady = requiredSkillSlugs.length === 0 || requiredSkillSlugs.every((slug) => enabledSkillSlugs.has(slug));
+  const assistantMessage = await db.get("SELECT 1 FROM chat_messages WHERE instance_id = ? AND role = 'assistant' LIMIT 1", instance.id);
+  const userMessage = await db.get("SELECT 1 FROM chat_messages WHERE instance_id = ? AND role = 'user' LIMIT 1", instance.id);
+  const instanceLog = await db.get("SELECT 1 FROM instance_logs WHERE instance_id = ? LIMIT 1", instance.id);
+  const recentChat = await db.get("SELECT COUNT(*) AS n FROM chat_messages WHERE instance_id = ?", instance.id);
+  const recentLogs = await db.get("SELECT COUNT(*) AS n FROM instance_logs WHERE instance_id = ?", instance.id);
 
   return {
     steps: [
@@ -495,15 +509,15 @@ function buildInstanceSetupStatus(instance) {
       {
         key: "test_chat",
         label: "Test Chat",
-        done: db.prepare("SELECT 1 FROM chat_messages WHERE instance_id = ? AND role = 'assistant' LIMIT 1").get(instance.id) !== undefined,
-        note: db.prepare("SELECT 1 FROM chat_messages WHERE instance_id = ? AND role = 'user' LIMIT 1").get(instance.id) !== undefined
+        done: assistantMessage !== undefined,
+        note: userMessage !== undefined
           ? "waiting for assistant reply"
           : "send a Web Chat message"
       },
       {
         key: "terminal_logs",
         label: "Terminal / Logs",
-        done: db.prepare("SELECT 1 FROM instance_logs WHERE instance_id = ? LIMIT 1").get(instance.id) !== undefined
+        done: instanceLog !== undefined
       }
     ],
     model: model
@@ -525,14 +539,14 @@ function buildInstanceSetupStatus(instance) {
       slug: skill.slug,
       status: skill.status
     })),
-    recentChatCount: db.prepare("SELECT COUNT(*) AS n FROM chat_messages WHERE instance_id = ?").get(instance.id).n,
-    recentLogCount: db.prepare("SELECT COUNT(*) AS n FROM instance_logs WHERE instance_id = ?").get(instance.id).n
+    recentChatCount: Number(recentChat?.n || 0),
+    recentLogCount: Number(recentLogs?.n || 0)
   };
 }
 
-function allocateNode(plan, template = null) {
+async function allocateNode(plan, template = null) {
   const providerProfileId = template?.provider_profile_id || null;
-  return db.prepare(`
+  return await db.get(`
     SELECT
       n.*,
       p.user_id AS provider_user_id,
@@ -558,31 +572,39 @@ function allocateNode(plan, template = null) {
           AND COALESCE(n.price_per_hour_cents, 0) <= ?
         )
       )
-    ORDER BY CASE WHEN n.type = 'provider' THEN 0 ELSE 1 END,
+    ORDER BY
+      CASE WHEN ? IS NULL AND n.type = 'official' THEN 0 ELSE 1 END,
+      CASE WHEN n.provider_profile_id IS NOT NULL THEN 0 ELSE 1 END,
       n.price_per_hour_cents ASC,
       n.created_at DESC,
       n.available_cpu DESC,
       n.available_memory_mb DESC
     LIMIT 1
-  `).get(plan.region, plan.cpu, plan.memory_mb, plan.disk_gb, providerProfileId, providerProfileId, plan.price_per_hour_cents);
+  `, plan.region,
+    plan.cpu,
+    plan.memory_mb,
+    plan.disk_gb,
+    providerProfileId,
+    providerProfileId,
+    plan.price_per_hour_cents,
+    providerProfileId);
 }
 
-function createNodeProvisionTask(node, instance, templateRow, plan) {
-  return enqueueNodeTask(node.id, "provision", buildProvisionPayload(instance, serializeTemplate(templateRow), serializePlan(plan)), instance.id);
+async function createNodeProvisionTask(node, instance, templateRow, plan) {
+  return await enqueueNodeTask(node.id, "provision", buildProvisionPayload(instance, serializeTemplate(templateRow), serializePlan(plan)), instance.id);
 }
 
-function settleRuntimeUsage(instance, action) {
+async function settleRuntimeUsage(instance, action) {
   if (instance.status !== "running" || !instance.started_at) return;
   const elapsedHours = Math.max(0, (Date.now() - new Date(instance.started_at).getTime()) / 3600000);
   if (elapsedHours <= 0) return;
   const cents = elapsedHours * Number(instance.price_per_hour_cents || 0);
-  db.prepare(`
+  await db.run(`
     INSERT INTO usage_records (
       id, user_id, instance_id, type, quantity, unit, price_estimate_cents, metadata_json, created_at
     )
     VALUES (?, ?, ?, 'runtime', ?, 'hour', ?, ?, ?)
-  `).run(
-    createId("use"),
+  `, createId("use"),
     instance.user_id,
     instance.id,
     elapsedHours,
@@ -592,7 +614,7 @@ function settleRuntimeUsage(instance, action) {
   );
 }
 
-function settleProviderLedger(instance, action) {
+async function settleProviderLedger(instance, action) {
   if (instance.node_type !== "provider" || !instance.started_at) return;
   const elapsedHours = Math.max(0, (Date.now() - new Date(instance.started_at).getTime()) / 3600000);
   if (elapsedHours <= 0) return;
@@ -600,15 +622,14 @@ function settleProviderLedger(instance, action) {
   const platformFeePercent = Number(instance.node_platform_fee_percent ?? 20);
   const platformFeeCents = grossCents * (platformFeePercent / 100);
   const providerCents = Math.max(0, grossCents - platformFeeCents);
-  db.prepare(`
+  await db.run(`
     INSERT INTO provider_ledger_entries (
       id, provider_profile_id, node_id, instance_id, type, status,
       runtime_hours, gross_cents, platform_fee_cents, provider_cents,
       metadata_json, created_at
     )
     VALUES (?, ?, ?, ?, 'runtime', 'available', ?, ?, ?, ?, ?, ?)
-  `).run(
-    createId("led"),
+  `, createId("led"),
     instance.node_provider_profile_id,
     instance.node_id,
     instance.id,
@@ -626,50 +647,52 @@ function settleProviderLedger(instance, action) {
   );
 }
 
-function settleInstanceUsage(instance, action) {
-  settleRuntimeUsage(instance, action);
-  settleProviderLedger(instance, action);
+async function settleInstanceUsage(instance, action) {
+  await Promise.all([
+    settleRuntimeUsage(instance, action),
+    settleProviderLedger(instance, action)
+  ]);
 }
 
-function recordTokenUsage(instance, tokens, metadata) {
+async function recordTokenUsage(instance, tokens, metadata) {
   const cents = (tokens / 1000) * 2;
-  db.prepare(`
+  await db.run(`
     INSERT INTO usage_records (
       id, user_id, instance_id, type, quantity, unit, price_estimate_cents, metadata_json, created_at
     )
     VALUES (?, ?, ?, 'token', ?, 'token', ?, ?, ?)
-  `).run(createId("use"), instance.user_id, instance.id, tokens, cents, toJson(metadata), now());
+  `, createId("use"), instance.user_id, instance.id, tokens, cents, toJson(metadata), now());
 }
 
 function estimateTokens(text) {
   return Math.max(1, Math.ceil(String(text || "").length / 2));
 }
 
-function releaseInstanceResources(instance) {
-  db.prepare(`
+async function releaseInstanceResources(instance) {
+  await db.run(`
     UPDATE nodes
-    SET available_cpu = MIN(total_cpu, available_cpu + ?),
-        available_memory_mb = MIN(total_memory_mb, available_memory_mb + ?),
-        available_disk_gb = MIN(total_disk_gb, available_disk_gb + ?),
+    SET available_cpu = LEAST(total_cpu, available_cpu + ?),
+        available_memory_mb = LEAST(total_memory_mb, available_memory_mb + ?),
+        available_disk_gb = LEAST(total_disk_gb, available_disk_gb + ?),
         last_heartbeat_at = ?,
         updated_at = ?
     WHERE id = ?
-  `).run(instance.cpu, instance.memory_mb, instance.disk_gb, now(), now(), instance.node_id);
+  `, instance.cpu, instance.memory_mb, instance.disk_gb, now(), now(), instance.node_id);
 }
 
-function debitNodeResources(nodeId, cpu, memoryMb, diskGb) {
-  db.prepare(`
+async function debitNodeResources(nodeId, cpu, memoryMb, diskGb) {
+  await db.run(`
     UPDATE nodes
     SET available_cpu = available_cpu - ?,
         available_memory_mb = available_memory_mb - ?,
         available_disk_gb = available_disk_gb - ?,
         updated_at = ?
     WHERE id = ?
-  `).run(cpu, memoryMb, diskGb, now(), nodeId);
+  `, cpu, memoryMb, diskGb, now(), nodeId);
 }
 
-function getReservedNodeResources(nodeId) {
-  const row = db.prepare(`
+async function getReservedNodeResources(nodeId) {
+  const row = await db.get(`
     SELECT
       COALESCE(SUM(cpu), 0) AS cpu,
       COALESCE(SUM(memory_mb), 0) AS memory_mb,
@@ -677,7 +700,7 @@ function getReservedNodeResources(nodeId) {
     FROM instances
     WHERE node_id = ?
       AND status IN ('provisioning', 'running')
-  `).get(nodeId);
+  `, nodeId);
   return {
     cpu: Number(row?.cpu || 0),
     memoryMb: Number(row?.memory_mb || 0),
@@ -685,10 +708,10 @@ function getReservedNodeResources(nodeId) {
   };
 }
 
-function clampNodeAvailability(nodeId, patch) {
-  const node = getNodeById(nodeId);
+async function clampNodeAvailability(nodeId, patch) {
+  const node = await getNodeById(nodeId);
   if (!node) return patch;
-  const reserved = getReservedNodeResources(nodeId);
+  const reserved = await getReservedNodeResources(nodeId);
   const totalCpu = patch.totalCpu === undefined ? Number(node.total_cpu || 0) : Number(patch.totalCpu || 0);
   const totalMemoryMb = patch.totalMemoryMb === undefined ? Number(node.total_memory_mb || 0) : Number(patch.totalMemoryMb || 0);
   const totalDiskGb = patch.totalDiskGb === undefined ? Number(node.total_disk_gb || 0) : Number(patch.totalDiskGb || 0);
@@ -703,8 +726,8 @@ function clampNodeAvailability(nodeId, patch) {
   };
 }
 
-function setNodeHeartbeat(nodeId, patch = {}) {
-  patch = clampNodeAvailability(nodeId, patch);
+async function setNodeHeartbeat(nodeId, patch = {}) {
+  patch = await clampNodeAvailability(nodeId, patch);
   const columns = [];
   const values = [];
   if (patch.status) {
@@ -744,18 +767,18 @@ function setNodeHeartbeat(nodeId, patch = {}) {
   columns.push("updated_at = ?");
   values.push(now());
   values.push(nodeId);
-  db.prepare(`UPDATE nodes SET ${columns.join(", ")} WHERE id = ?`).run(...values);
+  await db.run(`UPDATE nodes SET ${columns.join(", ")} WHERE id = ?`, ...values);
 }
 
-function enqueueNodeTask(nodeId, action, payload = {}, instanceId = null) {
+async function enqueueNodeTask(nodeId, action, payload = {}, instanceId = null) {
   const taskId = createId("tsk");
-  db.prepare(`
+  await db.run(`
     INSERT INTO node_tasks (
       id, node_id, instance_id, action, status, payload_json, result_json,
       created_at, updated_at
     )
     VALUES (?, ?, ?, ?, 'queued', ?, '{}', ?, ?)
-  `).run(taskId, nodeId, instanceId, action, toJson(payload), now(), now());
+  `, taskId, nodeId, instanceId, action, toJson(payload), now(), now());
   return taskId;
 }
 
@@ -1031,7 +1054,7 @@ function buildProvisionPayload(instance, template, plan) {
   };
 }
 
-app.get("/api/health", (req, res) => {
+app.get("/api/health", async (req, res) => {
   res.json({
     ok: true,
     runtime: "local-sandbox",
@@ -1040,18 +1063,18 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.get("/install-node.sh", (req, res) => {
+app.get("/install-node.sh", async (req, res) => {
   res.type("text/x-shellscript");
   res.send(renderNodeInstallScript(config.publicBaseUrl, String(req.query.token || "").trim()));
 });
 
-app.post("/api/auth/register", (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
   if (!email.includes("@")) return sendError(res, 400, "邮箱格式不正确");
   if (password.length < 6) return sendError(res, 400, "密码至少 6 位");
 
-  const exists = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  const exists = await db.get("SELECT id FROM users WHERE email = ?", email);
   if (exists) return sendError(res, 409, "邮箱已注册");
 
   const user = {
@@ -1060,34 +1083,34 @@ app.post("/api/auth/register", (req, res) => {
     role: "user",
     created_at: now()
   };
-  db.prepare(`
+  await db.run(`
     INSERT INTO users (id, email, password_hash, role, created_at)
     VALUES (?, ?, ?, ?, ?)
-  `).run(user.id, email, hashPassword(password), user.role, user.created_at);
+  `, user.id, email, hashPassword(password), user.role, user.created_at);
 
-  writeAudit(user.id, null, "auth.register", { email });
+  await writeAudit(user.id, null, "auth.register", { email });
   res.status(201).json({ token: signToken(user), user });
 });
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
-  const row = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+  const row = await db.get("SELECT * FROM users WHERE email = ?", email);
   if (!row || !verifyPassword(password, row.password_hash)) {
     return sendError(res, 401, "邮箱或密码错误");
   }
 
   const user = { id: row.id, email: row.email, role: row.role, created_at: row.created_at };
-  writeAudit(user.id, null, "auth.login", { email });
+  await writeAudit(user.id, null, "auth.login", { email });
   res.json({ token: signToken(user), user });
 });
 
-app.get("/api/me", requireAuth, (req, res) => {
+app.get("/api/me", requireAuth, async (req, res) => {
   res.json({ user: req.user });
 });
 
-app.get("/api/provider/profile", requireAuth, (req, res) => {
-  const profile = getProviderProfileByUserId(req.user.id);
+app.get("/api/provider/profile", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
   if (!profile) {
     return res.json({
       profile: null,
@@ -1105,7 +1128,7 @@ app.get("/api/provider/profile", requireAuth, (req, res) => {
     });
   }
 
-  const nodes = db.prepare(`
+  const nodes = await db.all(`
     SELECT
       n.*,
       p.display_name AS provider_display_name,
@@ -1114,15 +1137,15 @@ app.get("/api/provider/profile", requireAuth, (req, res) => {
     JOIN provider_profiles p ON p.id = n.provider_profile_id
     WHERE n.provider_profile_id = ?
     ORDER BY n.created_at DESC
-  `).all(profile.id);
-  const entries = db.prepare(`
+  `, profile.id);
+  const entries = await db.all(`
     SELECT *
     FROM provider_ledger_entries
     WHERE provider_profile_id = ?
     ORDER BY created_at DESC
     LIMIT 100
-  `).all(profile.id);
-  const summary = db.prepare(`
+  `, profile.id);
+  const summary = await db.get(`
     SELECT
       COUNT(*) AS entries,
       SUM(runtime_hours) AS runtime_hours,
@@ -1131,7 +1154,7 @@ app.get("/api/provider/profile", requireAuth, (req, res) => {
       SUM(provider_cents) AS provider_cents
     FROM provider_ledger_entries
     WHERE provider_profile_id = ?
-  `).get(profile.id);
+  `, profile.id);
 
   res.json({
     profile: serializeProviderProfile(profile),
@@ -1149,45 +1172,45 @@ app.get("/api/provider/profile", requireAuth, (req, res) => {
   });
 });
 
-app.post("/api/provider/apply", requireAuth, (req, res) => {
+app.post("/api/provider/apply", requireAuth, async (req, res) => {
   const displayName = String(req.body.displayName || "").trim().slice(0, 80);
   const contact = String(req.body.contact || "").trim().slice(0, 160);
   const payoutNote = String(req.body.payoutNote || "").trim().slice(0, 500);
   if (!displayName || !contact) return sendError(res, 400, "Provider 名称和联系方式不能为空");
 
-  const existing = getProviderProfileByUserId(req.user.id);
+  const existing = await getProviderProfileByUserId(req.user.id);
   const stamp = now();
   if (existing) {
     const nextStatus = existing.status === "rejected" ? "pending" : existing.status;
-    db.prepare(`
+    await db.run(`
       UPDATE provider_profiles
       SET display_name = ?, contact = ?, payout_note = ?, status = ?, rejection_reason = NULL, updated_at = ?
       WHERE id = ?
-    `).run(displayName, contact, payoutNote || null, nextStatus, stamp, existing.id);
-    writeAudit(req.user.id, null, "provider.apply.update", { providerProfileId: existing.id, status: nextStatus });
-    return res.json({ profile: serializeProviderProfile(getProviderProfileByUserId(req.user.id)) });
+    `, displayName, contact, payoutNote || null, nextStatus, stamp, existing.id);
+    await writeAudit(req.user.id, null, "provider.apply.update", { providerProfileId: existing.id, status: nextStatus });
+    return res.json({ profile: serializeProviderProfile(await getProviderProfileByUserId(req.user.id)) });
   }
 
   const id = createId("prv");
-  db.prepare(`
+  await db.run(`
     INSERT INTO provider_profiles (
       id, user_id, display_name, contact, status, platform_fee_percent,
       payout_note, created_at, updated_at
     )
     VALUES (?, ?, ?, ?, 'pending', 20, ?, ?, ?)
-  `).run(id, req.user.id, displayName, contact, payoutNote || null, stamp, stamp);
-  writeAudit(req.user.id, null, "provider.apply", { providerProfileId: id });
-  res.status(201).json({ profile: serializeProviderProfile(getProviderProfileByUserId(req.user.id)) });
+  `, id, req.user.id, displayName, contact, payoutNote || null, stamp, stamp);
+  await writeAudit(req.user.id, null, "provider.apply", { providerProfileId: id });
+  res.status(201).json({ profile: serializeProviderProfile(await getProviderProfileByUserId(req.user.id)) });
 });
 
-app.get("/api/provider/templates", requireAuth, (req, res) => {
-  const profile = getProviderProfileByUserId(req.user.id);
+app.get("/api/provider/templates", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
   if (!profile) return res.json({ templates: [] });
-  res.json({ templates: getProviderTemplates(profile.id) });
+  res.json({ templates: await getProviderTemplates(profile.id) });
 });
 
-app.post("/api/provider/templates", requireAuth, (req, res) => {
-  const profile = getProviderProfileByUserId(req.user.id);
+app.post("/api/provider/templates", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
   if (!profile) return sendError(res, 409, "请先申请 Provider 账号");
   if (profile.status !== "approved") return sendError(res, 403, "Provider 通过审核后才能发布 Agent");
 
@@ -1209,7 +1232,7 @@ app.post("/api/provider/templates", requireAuth, (req, res) => {
 
   const id = createId("tpl");
   const stamp = now();
-  db.prepare(`
+  await db.run(`
     INSERT INTO agent_templates (
       id, name, framework, description, official, status, base_price_cents, provider_profile_id,
       default_model_provider, default_model, capabilities_json, default_channels_json, default_skills_json,
@@ -1217,8 +1240,7 @@ app.post("/api/provider/templates", requireAuth, (req, res) => {
       created_at, updated_at
     )
     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
+  `, id,
     name,
     framework,
     description,
@@ -1239,11 +1261,10 @@ app.post("/api/provider/templates", requireAuth, (req, res) => {
     stamp,
     stamp
   );
-  db.prepare(`
+  await db.run(`
     INSERT INTO price_plans (id, template_id, name, cpu, memory_mb, disk_gb, region, price_per_hour_cents, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    createId("plan"),
+  `, createId("plan"),
     id,
     String(req.body.planName || "Starter"),
     cpu,
@@ -1253,36 +1274,35 @@ app.post("/api/provider/templates", requireAuth, (req, res) => {
     pricePerHourCents,
     stamp
   );
-  writeAudit(req.user.id, null, "provider.template.create", { templateId: id, status: String(req.body.status || "draft") });
-  res.status(201).json({ template: getTemplateWithPlans(id) });
+  await writeAudit(req.user.id, null, "provider.template.create", { templateId: id, status: String(req.body.status || "draft") });
+  res.status(201).json({ template: await getTemplateWithPlans(id) });
 });
 
-app.patch("/api/provider/templates/:id", requireAuth, (req, res) => {
-  const profile = getProviderProfileByUserId(req.user.id);
+app.patch("/api/provider/templates/:id", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
   if (!profile) return sendError(res, 409, "请先申请 Provider 账号");
-  const template = db.prepare("SELECT * FROM agent_templates WHERE id = ?").get(req.params.id);
+  const template = await db.get("SELECT * FROM agent_templates WHERE id = ?", req.params.id);
   if (!template || template.provider_profile_id !== profile.id) return sendError(res, 404, "模板不存在");
 
   const nextStatus = req.body.status === undefined ? template.status : String(req.body.status);
   if (!["draft", "active", "archived"].includes(nextStatus)) return sendError(res, 400, "模板状态不合法");
-  db.prepare(`
+  await db.run(`
     UPDATE agent_templates
     SET name = ?, description = ?, status = ?, base_price_cents = ?, updated_at = ?
     WHERE id = ?
-  `).run(
-    req.body.name === undefined ? template.name : String(req.body.name).trim(),
+  `, req.body.name === undefined ? template.name : String(req.body.name).trim(),
     req.body.description === undefined ? template.description : String(req.body.description).trim(),
     nextStatus,
     req.body.basePriceCents === undefined ? template.base_price_cents : Number(req.body.basePriceCents),
     now(),
     template.id
   );
-  writeAudit(req.user.id, null, "provider.template.update", { templateId: template.id, status: nextStatus });
-  res.json({ template: getTemplateWithPlans(template.id) });
+  await writeAudit(req.user.id, null, "provider.template.update", { templateId: template.id, status: nextStatus });
+  res.json({ template: await getTemplateWithPlans(template.id) });
 });
 
-app.post("/api/provider/nodes", requireAuth, (req, res) => {
-  const profile = getProviderProfileByUserId(req.user.id);
+app.post("/api/provider/nodes", requireAuth, async (req, res) => {
+  const profile = await getProviderProfileByUserId(req.user.id);
   if (!profile) return sendError(res, 409, "请先申请 Provider 账号");
   if (!["pending", "approved"].includes(profile.status)) return sendError(res, 403, "Provider 当前状态不能创建节点");
   const name = String(req.body.name || "").trim().slice(0, 80);
@@ -1299,7 +1319,7 @@ app.post("/api/provider/nodes", requireAuth, (req, res) => {
   const token = generateNodeToken();
   const stamp = now();
   const nodeId = createId("node");
-  db.prepare(`
+  await db.run(`
     INSERT INTO nodes (
       id, name, type, provider_profile_id, region, status,
       total_cpu, total_memory_mb, total_disk_gb,
@@ -1316,8 +1336,7 @@ app.post("/api/provider/nodes", requireAuth, (req, res) => {
       'unknown', NULL, ?, '{}',
       ?, ?, ?
     )
-  `).run(
-    nodeId,
+  `, nodeId,
     name,
     profile.id,
     region,
@@ -1336,8 +1355,8 @@ app.post("/api/provider/nodes", requireAuth, (req, res) => {
     stamp
   );
 
-  writeAudit(req.user.id, null, "provider.node.create", { providerProfileId: profile.id, nodeId });
-  const node = getNodeById(nodeId);
+  await writeAudit(req.user.id, null, "provider.node.create", { providerProfileId: profile.id, nodeId });
+  const node = await getNodeById(nodeId);
   res.status(201).json({
     node: serializeNode(node),
     token,
@@ -1346,28 +1365,27 @@ app.post("/api/provider/nodes", requireAuth, (req, res) => {
   });
 });
 
-app.post("/api/provider/nodes/:id/rotate-token", requireAuth, (req, res) => {
-  const node = getNodeById(req.params.id);
+app.post("/api/provider/nodes/:id/rotate-token", requireAuth, async (req, res) => {
+  const node = await getNodeById(req.params.id);
   if (!node || node.type !== "provider") return sendError(res, 404, "Provider 节点不存在");
   if (req.user.role !== "admin" && node.provider_user_id !== req.user.id) return sendError(res, 403, "无权操作该节点");
   const token = generateNodeToken();
-  db.prepare("UPDATE nodes SET agent_token_hash = ?, status = 'offline', updated_at = ? WHERE id = ?")
-    .run(hashNodeToken(token), now(), node.id);
-  writeAudit(req.user.id, null, "provider.node.rotate_token", { nodeId: node.id });
+  await db.run("UPDATE nodes SET agent_token_hash = ?, status = 'offline', updated_at = ? WHERE id = ?", hashNodeToken(token), now(), node.id);
+  await writeAudit(req.user.id, null, "provider.node.rotate_token", { nodeId: node.id });
   res.json({
-    node: serializeNode(getNodeById(node.id)),
+    node: serializeNode(await getNodeById(node.id)),
     token,
     installCommand: buildNodeInstallCommand(config.publicBaseUrl, token),
     installScriptUrl: `${config.publicBaseUrl.replace(/\/$/, "")}/api/provider/nodes/install.sh`
   });
 });
 
-app.get("/api/provider/nodes/install.sh", (req, res) => {
+app.get("/api/provider/nodes/install.sh", async (req, res) => {
   res.type("text/x-shellscript");
   res.send(renderNodeInstallScript(config.publicBaseUrl, String(req.query.token || "").trim()));
 });
 
-app.post("/api/node/register", requireNodeAuth, (req, res) => {
+app.post("/api/node/register", requireNodeAuth, async (req, res) => {
   const metrics = {
     hostname: String(req.body.hostname || "").slice(0, 160),
     totalCpu: Number(req.body.totalCpu || req.node.total_cpu || 0),
@@ -1378,15 +1396,15 @@ app.post("/api/node/register", requireNodeAuth, (req, res) => {
     publicHost: req.body.publicHost === undefined ? req.node.public_host : String(req.body.publicHost || "").slice(0, 160)
   };
   const status = req.node.provider_status === "approved" ? "healthy" : "degraded";
-  db.prepare(`
+  await db.run(`
     UPDATE nodes
     SET status = ?,
         total_cpu = ?,
         total_memory_mb = ?,
         total_disk_gb = ?,
-        available_cpu = MIN(available_cpu, ?),
-        available_memory_mb = MIN(available_memory_mb, ?),
-        available_disk_gb = MIN(available_disk_gb, ?),
+        available_cpu = LEAST(available_cpu, ?),
+        available_memory_mb = LEAST(available_memory_mb, ?),
+        available_disk_gb = LEAST(available_disk_gb, ?),
         docker_status = ?,
         agent_version = ?,
         public_host = COALESCE(NULLIF(?, ''), public_host),
@@ -1394,8 +1412,7 @@ app.post("/api/node/register", requireNodeAuth, (req, res) => {
         last_heartbeat_at = ?,
         updated_at = ?
     WHERE id = ?
-  `).run(
-    status,
+  `, status,
     metrics.totalCpu,
     metrics.totalMemoryMb,
     metrics.totalDiskGb,
@@ -1412,15 +1429,15 @@ app.post("/api/node/register", requireNodeAuth, (req, res) => {
   );
   res.json({
     ok: true,
-    node: serializeNode(getNodeById(req.node.id)),
+    node: serializeNode(await getNodeById(req.node.id)),
     providerStatus: req.node.provider_status
   });
 });
 
-app.post("/api/node/heartbeat", requireNodeAuth, (req, res) => {
+app.post("/api/node/heartbeat", requireNodeAuth, async (req, res) => {
   const status = String(req.body.status || "healthy");
   const nextStatus = ["healthy", "degraded", "offline"].includes(status) ? status : "degraded";
-  setNodeHeartbeat(req.node.id, {
+  await setNodeHeartbeat(req.node.id, {
     status: req.node.provider_status === "approved" ? nextStatus : "degraded",
     dockerStatus: String(req.body.dockerStatus || req.node.docker_status || "unknown").slice(0, 40),
     agentVersion: String(req.body.agentVersion || req.node.agent_version || "unknown").slice(0, 80),
@@ -1434,25 +1451,24 @@ app.post("/api/node/heartbeat", requireNodeAuth, (req, res) => {
       heartbeatAt: now()
     }
   });
-  res.json({ ok: true, node: serializeNode(getNodeById(req.node.id)) });
+  res.json({ ok: true, node: serializeNode(await getNodeById(req.node.id)) });
 });
 
-app.get("/api/node/tasks/poll", requireNodeAuth, (req, res) => {
-  const task = db.prepare(`
+app.get("/api/node/tasks/poll", requireNodeAuth, async (req, res) => {
+  const task = await db.get(`
     SELECT *
     FROM node_tasks
     WHERE node_id = ? AND status = 'queued'
     ORDER BY created_at ASC
     LIMIT 1
-  `).get(req.node.id);
+  `, req.node.id);
   if (!task) return res.json({ task: null });
-  db.prepare("UPDATE node_tasks SET status = 'running', picked_at = ?, updated_at = ? WHERE id = ?")
-    .run(now(), now(), task.id);
+  await db.run("UPDATE node_tasks SET status = 'running', picked_at = ?, updated_at = ? WHERE id = ?", now(), now(), task.id);
   res.json({ task: serializeNodeTask({ ...task, status: "running", picked_at: now() }) });
 });
 
-app.post("/api/node/tasks/:taskId/complete", requireNodeAuth, (req, res) => {
-  const task = db.prepare("SELECT * FROM node_tasks WHERE id = ? AND node_id = ?").get(req.params.taskId, req.node.id);
+app.post("/api/node/tasks/:taskId/complete", requireNodeAuth, async (req, res) => {
+  const task = await db.get("SELECT * FROM node_tasks WHERE id = ? AND node_id = ?", req.params.taskId, req.node.id);
   if (!task) return sendError(res, 404, "任务不存在");
   if (["succeeded", "failed"].includes(task.status)) {
     return res.json({ ok: true, task: serializeNodeTask(task), duplicate: true });
@@ -1463,29 +1479,28 @@ app.post("/api/node/tasks/:taskId/complete", requireNodeAuth, (req, res) => {
   const ok = Boolean(req.body.ok);
   const result = req.body.result || {};
   const errorMessage = ok ? null : String(req.body.error || "任务执行失败").slice(0, 500);
-  db.prepare(`
+  await db.run(`
     UPDATE node_tasks
     SET status = ?, result_json = ?, error_message = ?, completed_at = ?, updated_at = ?
     WHERE id = ?
-  `).run(ok ? "succeeded" : "failed", toJson(result), errorMessage, now(), now(), task.id);
+  `, ok ? "succeeded" : "failed", toJson(result), errorMessage, now(), now(), task.id);
 
   if (task.instance_id) {
     if (ok && ["start", "restart", "provision"].includes(task.action)) {
-      db.prepare("UPDATE instances SET status = 'running', started_at = COALESCE(started_at, ?), stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?")
-        .run(now(), now(), task.instance_id);
-      writeInstanceLog(task.instance_id, "info", "node-agent", `${task.action} 任务执行成功`, result);
+      await db.run("UPDATE instances SET status = 'running', started_at = COALESCE(started_at, ?), stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?", now(), now(), task.instance_id);
+      await writeInstanceLog(task.instance_id, "info", "node-agent", `${task.action} 任务执行成功`, result);
     } else if (ok && task.action === "chat") {
       const answer = String(result.answer || result.message || "").trim();
       if (answer) {
         const assistantTokens = estimateTokens(answer);
-        db.prepare(`
+        await db.run(`
           INSERT INTO chat_messages (id, instance_id, role, content, token_estimate, created_at)
           VALUES (?, ?, 'assistant', ?, ?, ?)
-        `).run(createId("msg"), task.instance_id, answer, assistantTokens, now());
-        const instance = getInstance(task.instance_id, { id: "__system__", role: "admin" });
+        `, createId("msg"), task.instance_id, answer, assistantTokens, now());
+        const instance = await getInstance(task.instance_id, { id: "__system__", role: "admin" });
         if (instance) {
           const payload = fromJson(task.payload_json, {});
-          recordTokenUsage(instance, Number(payload.userTokens || 0) + assistantTokens, {
+          await recordTokenUsage(instance, Number(payload.userTokens || 0) + assistantTokens, {
             provider: payload.model?.provider,
             model: payload.model?.model,
             channel: "web_chat",
@@ -1493,54 +1508,56 @@ app.post("/api/node/tasks/:taskId/complete", requireNodeAuth, (req, res) => {
           });
         }
       }
-      writeInstanceLog(task.instance_id, "info", "node-agent", "chat 任务执行成功", result);
+      await writeInstanceLog(task.instance_id, "info", "node-agent", "chat 任务执行成功", result);
     } else if (!ok) {
       if (task.action === "chat") {
         const failureNotice = `Provider runtime failed to answer this chat turn: ${errorMessage}`;
-        db.prepare(`
+        await db.run(`
           INSERT INTO chat_messages (id, instance_id, role, content, token_estimate, created_at)
           VALUES (?, ?, 'assistant', ?, 0, ?)
-        `).run(createId("msg"), task.instance_id, failureNotice, now());
-        writeInstanceLog(task.instance_id, "error", "node-agent", "chat 任务执行失败", { error: errorMessage });
+        `, createId("msg"), task.instance_id, failureNotice, now());
+        await writeInstanceLog(task.instance_id, "error", "node-agent", "chat 任务执行失败", { error: errorMessage });
       } else {
-        db.prepare("UPDATE instances SET status = 'error', error_reason = ?, updated_at = ? WHERE id = ?")
-          .run(errorMessage, now(), task.instance_id);
-        writeInstanceLog(task.instance_id, "error", "node-agent", `${task.action} 任务执行失败`, { error: errorMessage });
+        await db.run("UPDATE instances SET status = 'error', error_reason = ?, updated_at = ? WHERE id = ?", errorMessage, now(), task.instance_id);
+        await writeInstanceLog(task.instance_id, "error", "node-agent", `${task.action} 任务执行失败`, { error: errorMessage });
       }
     }
   }
 
-  res.json({ ok: true, task: serializeNodeTask(db.prepare("SELECT * FROM node_tasks WHERE id = ?").get(task.id)) });
+  res.json({ ok: true, task: serializeNodeTask(await db.get("SELECT * FROM node_tasks WHERE id = ?", task.id)) });
 });
 
-app.get("/api/templates", requireAuth, (req, res) => {
+app.get("/api/templates", requireAuth, async (req, res) => {
   const includeAll = req.user.role === "admin" && req.query.includeAll === "1";
-  const rows = db.prepare(`
+  const rows = await db.all(`
     SELECT *
     FROM agent_templates
     ${includeAll ? "" : "WHERE status = 'active'"}
     ORDER BY created_at ASC
-  `).all();
-  const visibleRows = includeAll
-    ? rows
-    : rows.filter((row) => {
-        if (!row.provider_profile_id) return true;
-        const plans = db.prepare("SELECT * FROM price_plans WHERE template_id = ?").all(row.id);
-        return plans.some((plan) => allocateNode(plan, row));
-      });
-  res.json({ templates: visibleRows.map((row) => getTemplateWithPlans(row.id)) });
+  `);
+  const visibleRows = [];
+  for (const row of rows) {
+    if (includeAll || !row.provider_profile_id) {
+      visibleRows.push(row);
+      continue;
+    }
+    const plans = await db.all("SELECT * FROM price_plans WHERE template_id = ?", row.id);
+    const allocatableNodes = await Promise.all(plans.map((plan) => allocateNode(plan, row)));
+    if (allocatableNodes.some(Boolean)) visibleRows.push(row);
+  }
+  res.json({ templates: await Promise.all(visibleRows.map((row) => getTemplateWithPlans(row.id))) });
 });
 
-app.get("/api/templates/:id", requireAuth, (req, res) => {
-  const template = getTemplateWithPlans(req.params.id);
+app.get("/api/templates/:id", requireAuth, async (req, res) => {
+  const template = await getTemplateWithPlans(req.params.id);
   if (!template || (template.status !== "active" && req.user.role !== "admin")) {
     return sendError(res, 404, "模板不存在");
   }
   res.json({ template });
 });
 
-app.get("/api/instances", requireAuth, (req, res) => {
-  const rows = db.prepare(`
+app.get("/api/instances", requireAuth, async (req, res) => {
+  const rows = await db.all(`
     SELECT
       i.*,
       t.name AS template_name,
@@ -1561,20 +1578,20 @@ app.get("/api/instances", requireAuth, (req, res) => {
     JOIN nodes n ON n.id = i.node_id
     WHERE i.user_id = ?
     ORDER BY i.created_at DESC
-  `).all(req.user.id);
-  res.json({ instances: rows.map(serializeInstance) });
+  `, req.user.id);
+  res.json({ instances: await Promise.all(rows.map(serializeInstance)) });
 });
 
-app.post("/api/instances", requireAuth, (req, res) => {
+app.post("/api/instances", requireAuth, async (req, res) => {
   const templateId = String(req.body.templateId || "");
   const planId = String(req.body.planId || "");
   const name = String(req.body.name || "").trim().slice(0, 80) || "OpenAsst Agent";
 
-  const templateRow = db.prepare("SELECT * FROM agent_templates WHERE id = ? AND status = 'active'").get(templateId);
+  const templateRow = await db.get("SELECT * FROM agent_templates WHERE id = ? AND status = 'active'", templateId);
   if (!templateRow) return sendError(res, 404, "模板不存在");
-  const plan = db.prepare("SELECT * FROM price_plans WHERE id = ? AND template_id = ?").get(planId, templateId);
+  const plan = await db.get("SELECT * FROM price_plans WHERE id = ? AND template_id = ?", planId, templateId);
   if (!plan) return sendError(res, 400, "套餐不存在");
-  const node = allocateNode(plan, templateRow);
+  const node = await allocateNode(plan, templateRow);
   if (!node) {
     return sendError(
       res,
@@ -1590,216 +1607,198 @@ app.post("/api/instances", requireAuth, (req, res) => {
   const workspacePath = workspacePathFor(instanceId);
 
   try {
-    db.exec("BEGIN");
-    db.prepare(`
-      INSERT INTO instances (
-        id, user_id, template_id, node_id, plan_id, name, status, cpu, memory_mb, disk_gb,
-        region, workspace_path, started_at, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      instanceId,
-      req.user.id,
-      templateId,
-      node.id,
-      planId,
-      name,
-      plan.cpu,
-      plan.memory_mb,
-      plan.disk_gb,
-      plan.region,
-      workspacePath,
-      stamp,
-      stamp,
-      stamp
-    );
-
-    debitNodeResources(node.id, plan.cpu, plan.memory_mb, plan.disk_gb);
-
-    db.prepare(`
-      INSERT INTO model_configs (
-        id, instance_id, provider, model, credential_ref, is_default, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, NULL, 1, ?, ?)
-    `).run(
-      createId("mod"),
-      instanceId,
-      templateRow.default_model_provider,
-      templateRow.default_model,
-      stamp,
-      stamp
-    );
-
-    const channelTypes = Array.from(new Set(["web_chat", "wechat", "qq", "feishu"]));
-    const insertChannel = db.prepare(`
-      INSERT INTO channel_configs (
-        id, instance_id, type, status, config_json, created_at, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const type of channelTypes) {
-      insertChannel.run(
-        createId("chn"),
-        instanceId,
-        type,
-        type === "web_chat" ? "active" : "waitlist",
-        toJson({ label: type, adapterReady: type === "web_chat" }),
-        stamp,
-        stamp
-      );
-    }
-
-    const defaultSkillSlugs = fromJson(templateRow.default_skills_json, []);
-    for (const slug of defaultSkillSlugs) {
-      const skill = db.prepare("SELECT * FROM skills WHERE slug = ?").get(slug);
-      if (!skill) continue;
-      db.prepare(`
-        INSERT OR IGNORE INTO skill_installs (
-          id, instance_id, skill_id, version, status, permissions_json, created_at, updated_at
+    await db.transaction(async () => {
+      await db.run(`
+        INSERT INTO instances (
+          id, user_id, template_id, node_id, plan_id, name, status, cpu, memory_mb, disk_gb,
+          region, workspace_path, started_at, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, 'enabled', ?, ?, ?)
-      `).run(
-        createId("ski"),
+        VALUES (?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?)
+      `, instanceId,
+        req.user.id,
+        templateId,
+        node.id,
+        planId,
+        name,
+        plan.cpu,
+        plan.memory_mb,
+        plan.disk_gb,
+        plan.region,
+        workspacePath,
+        stamp,
+        stamp,
+        stamp);
+
+      await debitNodeResources(node.id, plan.cpu, plan.memory_mb, plan.disk_gb);
+
+      await db.run(`
+        INSERT INTO model_configs (
+          id, instance_id, provider, model, credential_ref, is_default, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, NULL, 1, ?, ?)
+      `, createId("mod"),
         instanceId,
-        skill.id,
-        skill.version,
-        skill.permissions_json,
+        templateRow.default_model_provider,
+        templateRow.default_model,
         stamp,
         stamp
       );
-    }
 
-    db.exec("COMMIT");
+      const channelTypes = Array.from(new Set(["web_chat", "wechat", "qq", "feishu"]));
+      for (const type of channelTypes) {
+        await db.run(`
+          INSERT INTO channel_configs (
+            id, instance_id, type, status, config_json, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, createId("chn"),
+          instanceId,
+          type,
+          type === "web_chat" ? "active" : "waitlist",
+          toJson({ label: type, adapterReady: type === "web_chat" }),
+          stamp,
+          stamp
+        );
+      }
+
+      const defaultSkillSlugs = fromJson(templateRow.default_skills_json, []);
+      for (const slug of defaultSkillSlugs) {
+        const skill = await db.get("SELECT * FROM skills WHERE slug = ?", slug);
+        if (!skill) continue;
+        await db.run(`
+          INSERT OR IGNORE INTO skill_installs (
+            id, instance_id, skill_id, version, status, permissions_json, created_at, updated_at
+          )
+          VALUES (?, ?, ?, ?, 'enabled', ?, ?, ?)
+        `, createId("ski"),
+          instanceId,
+          skill.id,
+          skill.version,
+          skill.permissions_json,
+          stamp,
+          stamp
+        );
+      }
+    });
   } catch (error) {
-    db.exec("ROLLBACK");
     return sendError(res, 500, "创建实例失败", error.message);
   }
 
-  const inserted = getInstance(instanceId, req.user);
+  const inserted = await getInstance(instanceId, req.user);
   try {
-    const provisionTaskId = createNodeProvisionTask(node, inserted, templateRow, plan);
+    const provisionTaskId = await createNodeProvisionTask(node, inserted, templateRow, plan);
     provisionWorkspace(inserted, serializeTemplate(templateRow), serializePlan(plan));
     if (node.type === "provider") {
-      db.prepare("UPDATE instances SET status = 'provisioning', started_at = NULL, updated_at = ? WHERE id = ?")
-        .run(now(), instanceId);
+      await db.run("UPDATE instances SET status = 'provisioning', started_at = NULL, updated_at = ? WHERE id = ?", now(), instanceId);
     } else {
-      db.prepare("UPDATE instances SET status = 'running', started_at = ?, updated_at = ? WHERE id = ?")
-        .run(now(), now(), instanceId);
+      await db.run("UPDATE instances SET status = 'running', started_at = ?, updated_at = ? WHERE id = ?", now(), now(), instanceId);
     }
-    writeInstanceLog(instanceId, "info", "orchestrator", node.type === "provider" ? "实例已分配到 Provider 节点并创建任务" : "实例已在本地沙箱启动", {
+    await writeInstanceLog(instanceId, "info", "orchestrator", node.type === "provider" ? "实例已分配到 Provider 节点并创建任务" : "实例已在本地沙箱启动", {
       nodeId: node.id,
       nodeType: node.type,
       provisionTaskId,
       workspacePath
     });
-    writeAudit(req.user.id, instanceId, "instance.create", { templateId, planId, nodeId: node.id });
+    await writeAudit(req.user.id, instanceId, "instance.create", { templateId, planId, nodeId: node.id });
   } catch (error) {
-    releaseInstanceResources(inserted);
-    db.prepare("UPDATE instances SET status = 'error', error_reason = ?, updated_at = ? WHERE id = ?")
-      .run(error.message, now(), instanceId);
-    writeInstanceLog(instanceId, "error", "orchestrator", "实例启动失败", { error: error.message });
+    await releaseInstanceResources(inserted);
+    await db.run("UPDATE instances SET status = 'error', error_reason = ?, updated_at = ? WHERE id = ?", error.message, now(), instanceId);
+    await writeInstanceLog(instanceId, "error", "orchestrator", "实例启动失败", { error: error.message });
   }
 
-  res.status(201).json({ instance: serializeInstance(getInstance(instanceId, req.user)) });
+  res.status(201).json({ instance: await serializeInstance(await getInstance(instanceId, req.user)) });
 });
 
-app.get("/api/instances/:id", requireAuth, requireInstance, (req, res) => {
-  res.json({ instance: serializeInstance(req.instance) });
+app.get("/api/instances/:id", requireAuth, requireInstance, async (req, res) => {
+  res.json({ instance: await serializeInstance(req.instance) });
 });
 
-app.get("/api/instances/:id/setup", requireAuth, requireInstance, (req, res) => {
-  res.json({ setup: buildInstanceSetupStatus(req.instance) });
+app.get("/api/instances/:id/setup", requireAuth, requireInstance, async (req, res) => {
+  res.json({ setup: await buildInstanceSetupStatus(req.instance) });
 });
 
-app.patch("/api/instances/:id", requireAuth, requireInstance, (req, res) => {
+app.patch("/api/instances/:id", requireAuth, requireInstance, async (req, res) => {
   const name = String(req.body.name || "").trim().slice(0, 80);
   if (!name) return sendError(res, 400, "实例名称不能为空");
-  db.prepare("UPDATE instances SET name = ?, updated_at = ? WHERE id = ?").run(name, now(), req.instance.id);
-  writeAudit(req.user.id, req.instance.id, "instance.rename", { name });
-  res.json({ instance: serializeInstance(getInstance(req.instance.id, req.user)) });
+  await db.run("UPDATE instances SET name = ?, updated_at = ? WHERE id = ?", name, now(), req.instance.id);
+  await writeAudit(req.user.id, req.instance.id, "instance.rename", { name });
+  res.json({ instance: await serializeInstance(await getInstance(req.instance.id, req.user)) });
 });
 
-app.post("/api/instances/:id/start", requireAuth, requireInstance, (req, res) => {
+app.post("/api/instances/:id/start", requireAuth, requireInstance, async (req, res) => {
   if (req.instance.status === "destroyed") return sendError(res, 409, "已销毁实例不能启动");
   if (req.instance.status !== "running") {
     if (req.instance.node_type === "provider") {
-      const taskId = enqueueNodeTask(req.instance.node_id, "start", { instanceId: req.instance.id }, req.instance.id);
-      db.prepare("UPDATE instances SET status = 'provisioning', stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?")
-        .run(now(), req.instance.id);
-      writeInstanceLog(req.instance.id, "info", "runtime", "实例启动任务已派发到 Provider 节点", { taskId });
+      const taskId = await enqueueNodeTask(req.instance.node_id, "start", { instanceId: req.instance.id }, req.instance.id);
+      await db.run("UPDATE instances SET status = 'provisioning', stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?", now(), req.instance.id);
+      await writeInstanceLog(req.instance.id, "info", "runtime", "实例启动任务已派发到 Provider 节点", { taskId });
     } else {
-      db.prepare("UPDATE instances SET status = 'running', started_at = ?, stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?")
-        .run(now(), now(), req.instance.id);
-      writeInstanceLog(req.instance.id, "info", "runtime", "实例已启动");
+      await db.run("UPDATE instances SET status = 'running', started_at = ?, stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?", now(), now(), req.instance.id);
+      await writeInstanceLog(req.instance.id, "info", "runtime", "实例已启动");
     }
-    writeAudit(req.user.id, req.instance.id, "instance.start");
+    await writeAudit(req.user.id, req.instance.id, "instance.start");
   }
-  res.json({ instance: serializeInstance(getInstance(req.instance.id, req.user)) });
+  res.json({ instance: await serializeInstance(await getInstance(req.instance.id, req.user)) });
 });
 
-app.post("/api/instances/:id/stop", requireAuth, requireInstance, (req, res) => {
+app.post("/api/instances/:id/stop", requireAuth, requireInstance, async (req, res) => {
   if (req.instance.status === "destroyed") return sendError(res, 409, "实例已销毁");
-  settleInstanceUsage(req.instance, "stop");
+  await settleInstanceUsage(req.instance, "stop");
   if (req.instance.node_type === "provider") {
-    enqueueNodeTask(req.instance.node_id, "stop", { instanceId: req.instance.id }, req.instance.id);
+    await enqueueNodeTask(req.instance.node_id, "stop", { instanceId: req.instance.id }, req.instance.id);
   }
-  db.prepare("UPDATE instances SET status = 'stopped', started_at = NULL, stopped_at = ?, updated_at = ? WHERE id = ?")
-    .run(now(), now(), req.instance.id);
-  writeInstanceLog(req.instance.id, "info", "runtime", "实例已停止");
-  writeAudit(req.user.id, req.instance.id, "instance.stop");
-  res.json({ instance: serializeInstance(getInstance(req.instance.id, req.user)) });
+  await db.run("UPDATE instances SET status = 'stopped', started_at = NULL, stopped_at = ?, updated_at = ? WHERE id = ?", now(), now(), req.instance.id);
+  await writeInstanceLog(req.instance.id, "info", "runtime", "实例已停止");
+  await writeAudit(req.user.id, req.instance.id, "instance.stop");
+  res.json({ instance: await serializeInstance(await getInstance(req.instance.id, req.user)) });
 });
 
-app.post("/api/instances/:id/restart", requireAuth, requireInstance, (req, res) => {
+app.post("/api/instances/:id/restart", requireAuth, requireInstance, async (req, res) => {
   if (req.instance.status === "destroyed") return sendError(res, 409, "已销毁实例不能重启");
-  settleInstanceUsage(req.instance, "restart");
+  await settleInstanceUsage(req.instance, "restart");
   if (req.instance.node_type === "provider") {
-    const taskId = enqueueNodeTask(req.instance.node_id, "restart", { instanceId: req.instance.id }, req.instance.id);
-    db.prepare("UPDATE instances SET status = 'provisioning', started_at = NULL, stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?")
-      .run(now(), req.instance.id);
-    writeInstanceLog(req.instance.id, "info", "runtime", "实例重启任务已派发到 Provider 节点", { taskId });
+    const taskId = await enqueueNodeTask(req.instance.node_id, "restart", { instanceId: req.instance.id }, req.instance.id);
+    await db.run("UPDATE instances SET status = 'provisioning', started_at = NULL, stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?", now(), req.instance.id);
+    await writeInstanceLog(req.instance.id, "info", "runtime", "实例重启任务已派发到 Provider 节点", { taskId });
   } else {
-    db.prepare("UPDATE instances SET status = 'running', started_at = ?, stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?")
-      .run(now(), now(), req.instance.id);
-    writeInstanceLog(req.instance.id, "info", "runtime", "实例已重启");
+    await db.run("UPDATE instances SET status = 'running', started_at = ?, stopped_at = NULL, error_reason = NULL, updated_at = ? WHERE id = ?", now(), now(), req.instance.id);
+    await writeInstanceLog(req.instance.id, "info", "runtime", "实例已重启");
   }
-  writeAudit(req.user.id, req.instance.id, "instance.restart");
-  res.json({ instance: serializeInstance(getInstance(req.instance.id, req.user)) });
+  await writeAudit(req.user.id, req.instance.id, "instance.restart");
+  res.json({ instance: await serializeInstance(await getInstance(req.instance.id, req.user)) });
 });
 
-app.post("/api/instances/:id/destroy", requireAuth, requireInstance, (req, res) => {
+app.post("/api/instances/:id/destroy", requireAuth, requireInstance, async (req, res) => {
   if (req.instance.status !== "destroyed") {
-    settleInstanceUsage(req.instance, "destroy");
+    await settleInstanceUsage(req.instance, "destroy");
     if (req.instance.node_type === "provider") {
-      enqueueNodeTask(req.instance.node_id, "destroy", { instanceId: req.instance.id }, req.instance.id);
+      await enqueueNodeTask(req.instance.node_id, "destroy", { instanceId: req.instance.id }, req.instance.id);
     }
-    releaseInstanceResources(req.instance);
-    db.prepare("UPDATE instances SET status = 'destroyed', started_at = NULL, destroyed_at = ?, updated_at = ? WHERE id = ?")
-      .run(now(), now(), req.instance.id);
-    writeInstanceLog(req.instance.id, "warn", "runtime", "实例已销毁，工作目录保留用于审计");
-    writeAudit(req.user.id, req.instance.id, "instance.destroy");
+    await releaseInstanceResources(req.instance);
+    await db.run("UPDATE instances SET status = 'destroyed', started_at = NULL, destroyed_at = ?, updated_at = ? WHERE id = ?", now(), now(), req.instance.id);
+    await writeInstanceLog(req.instance.id, "warn", "runtime", "实例已销毁，工作目录保留用于审计");
+    await writeAudit(req.user.id, req.instance.id, "instance.destroy");
   }
-  res.json({ instance: serializeInstance(getInstance(req.instance.id, req.user)) });
+  res.json({ instance: await serializeInstance(await getInstance(req.instance.id, req.user)) });
 });
 
-app.post("/api/instances/:id/health-check", requireAuth, requireInstance, (req, res) => {
+app.post("/api/instances/:id/health-check", requireAuth, requireInstance, async (req, res) => {
   const nodeOk = req.instance.node_type === "provider"
     ? req.instance.node_status !== "offline"
     : fs.existsSync(req.instance.workspace_path);
   const ok = nodeOk && req.instance.status !== "destroyed";
   if (!ok && req.instance.status !== "destroyed") {
-    db.prepare("UPDATE instances SET status = 'error', error_reason = ?, updated_at = ? WHERE id = ?")
-      .run(req.instance.node_type === "provider" ? "Provider 节点不可用" : "工作目录不可用", now(), req.instance.id);
-    writeInstanceLog(req.instance.id, "error", "health", req.instance.node_type === "provider" ? "健康检查失败：Provider 节点不可用" : "健康检查失败：工作目录不可用");
+    await db.run("UPDATE instances SET status = 'error', error_reason = ?, updated_at = ? WHERE id = ?", req.instance.node_type === "provider" ? "Provider 节点不可用" : "工作目录不可用", now(), req.instance.id);
+    await writeInstanceLog(req.instance.id, "error", "health", req.instance.node_type === "provider" ? "健康检查失败：Provider 节点不可用" : "健康检查失败：工作目录不可用");
   } else {
-    writeInstanceLog(req.instance.id, "info", "health", "健康检查通过");
+    await writeInstanceLog(req.instance.id, "info", "health", "健康检查通过");
   }
-  writeAudit(req.user.id, req.instance.id, "instance.health_check", { ok });
-  res.json({ ok, instance: serializeInstance(getInstance(req.instance.id, req.user)) });
+  await writeAudit(req.user.id, req.instance.id, "instance.health_check", { ok });
+  res.json({ ok, instance: await serializeInstance(await getInstance(req.instance.id, req.user)) });
 });
 
-app.get("/api/instances/:id/model", requireAuth, requireInstance, (req, res) => {
-  const row = db.prepare("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1").get(req.instance.id);
+app.get("/api/instances/:id/model", requireAuth, requireInstance, async (req, res) => {
+  const row = await db.get("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1", req.instance.id);
   res.json({
     modelConfig: row
       ? {
@@ -1814,14 +1813,14 @@ app.get("/api/instances/:id/model", requireAuth, requireInstance, (req, res) => 
   });
 });
 
-app.put("/api/instances/:id/model", requireAuth, requireInstance, (req, res) => {
+app.put("/api/instances/:id/model", requireAuth, requireInstance, async (req, res) => {
   const provider = String(req.body.provider || "").trim();
   const model = String(req.body.model || "").trim();
   const apiKey = String(req.body.apiKey || "");
   const clearApiKey = Boolean(req.body.clearApiKey);
   if (!provider || !model) return sendError(res, 400, "模型供应商和模型名不能为空");
 
-  const existing = db.prepare("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1").get(req.instance.id);
+  const existing = await db.get("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1", req.instance.id);
   const credentialRef = clearApiKey
     ? null
     : apiKey
@@ -1829,27 +1828,27 @@ app.put("/api/instances/:id/model", requireAuth, requireInstance, (req, res) => 
       : existing?.credential_ref || null;
 
   if (existing) {
-    db.prepare(`
+    await db.run(`
       UPDATE model_configs
       SET provider = ?, model = ?, credential_ref = ?, updated_at = ?
       WHERE id = ?
-    `).run(provider, model, credentialRef, now(), existing.id);
+    `, provider, model, credentialRef, now(), existing.id);
   } else {
-    db.prepare(`
+    await db.run(`
       INSERT INTO model_configs (
         id, instance_id, provider, model, credential_ref, is_default, created_at, updated_at
       )
       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-    `).run(createId("mod"), req.instance.id, provider, model, credentialRef, now(), now());
+    `, createId("mod"), req.instance.id, provider, model, credentialRef, now(), now());
   }
 
-  writeAudit(req.user.id, req.instance.id, "model.update", {
+  await writeAudit(req.user.id, req.instance.id, "model.update", {
     provider,
     model,
     credential: credentialRef ? "configured" : "empty"
   });
-  writeInstanceLog(req.instance.id, "info", "model", `默认模型已更新为 ${provider}/${model}`);
-  const row = db.prepare("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1").get(req.instance.id);
+  await writeInstanceLog(req.instance.id, "info", "model", `默认模型已更新为 ${provider}/${model}`);
+  const row = await db.get("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1", req.instance.id);
   res.json({
     modelConfig: {
       id: row.id,
@@ -1862,8 +1861,8 @@ app.put("/api/instances/:id/model", requireAuth, requireInstance, (req, res) => 
   });
 });
 
-app.get("/api/instances/:id/channels", requireAuth, requireInstance, (req, res) => {
-  const rows = db.prepare("SELECT * FROM channel_configs WHERE instance_id = ? ORDER BY type ASC").all(req.instance.id);
+app.get("/api/instances/:id/channels", requireAuth, requireInstance, async (req, res) => {
+  const rows = await db.all("SELECT * FROM channel_configs WHERE instance_id = ? ORDER BY type ASC", req.instance.id);
   res.json({
     channels: rows.map((row) => ({
       id: row.id,
@@ -1875,25 +1874,24 @@ app.get("/api/instances/:id/channels", requireAuth, requireInstance, (req, res) 
   });
 });
 
-app.put("/api/instances/:id/channels/:type", requireAuth, requireInstance, (req, res) => {
+app.put("/api/instances/:id/channels/:type", requireAuth, requireInstance, async (req, res) => {
   const type = String(req.params.type || "");
   if (!["web_chat", "wechat", "qq", "feishu"].includes(type)) return sendError(res, 400, "不支持的通道类型");
   const status = String(req.body.status || "disabled");
   if (!["active", "disabled", "waitlist"].includes(status)) return sendError(res, 400, "通道状态不合法");
   const configJson = toJson(req.body.config || {});
-  const existing = db.prepare("SELECT * FROM channel_configs WHERE instance_id = ? AND type = ?").get(req.instance.id, type);
+  const existing = await db.get("SELECT * FROM channel_configs WHERE instance_id = ? AND type = ?", req.instance.id, type);
   if (existing) {
-    db.prepare("UPDATE channel_configs SET status = ?, config_json = ?, updated_at = ? WHERE id = ?")
-      .run(status, configJson, now(), existing.id);
+    await db.run("UPDATE channel_configs SET status = ?, config_json = ?, updated_at = ? WHERE id = ?", status, configJson, now(), existing.id);
   } else {
-    db.prepare(`
+    await db.run(`
       INSERT INTO channel_configs (id, instance_id, type, status, config_json, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(createId("chn"), req.instance.id, type, status, configJson, now(), now());
+    `, createId("chn"), req.instance.id, type, status, configJson, now(), now());
   }
-  writeAudit(req.user.id, req.instance.id, "channel.update", { type, status });
-  writeInstanceLog(req.instance.id, "info", "channel", `${type} 通道已更新为 ${status}`);
-  const rows = db.prepare("SELECT * FROM channel_configs WHERE instance_id = ? ORDER BY type ASC").all(req.instance.id);
+  await writeAudit(req.user.id, req.instance.id, "channel.update", { type, status });
+  await writeInstanceLog(req.instance.id, "info", "channel", `${type} 通道已更新为 ${status}`);
+  const rows = await db.all("SELECT * FROM channel_configs WHERE instance_id = ? ORDER BY type ASC", req.instance.id);
   res.json({
     channels: rows.map((row) => ({
       id: row.id,
@@ -1905,8 +1903,8 @@ app.put("/api/instances/:id/channels/:type", requireAuth, requireInstance, (req,
   });
 });
 
-app.get("/api/instances/:id/chat", requireAuth, requireInstance, (req, res) => {
-  const rows = db.prepare(`
+app.get("/api/instances/:id/chat", requireAuth, requireInstance, async (req, res) => {
+  const rows = await db.all(`
     SELECT *
     FROM (
       SELECT *
@@ -1916,7 +1914,7 @@ app.get("/api/instances/:id/chat", requireAuth, requireInstance, (req, res) => {
       LIMIT 100
     )
     ORDER BY created_at ASC
-  `).all(req.instance.id);
+  `, req.instance.id);
   res.json({
     messages: rows.map((row) => ({
       id: row.id,
@@ -1928,46 +1926,47 @@ app.get("/api/instances/:id/chat", requireAuth, requireInstance, (req, res) => {
   });
 });
 
-app.post("/api/instances/:id/chat", requireAuth, requireInstance, (req, res) => {
+app.post("/api/instances/:id/chat", requireAuth, requireInstance, async (req, res) => {
   if (req.instance.status !== "running") return sendError(res, 409, "实例未运行");
-  const webChat = db.prepare("SELECT * FROM channel_configs WHERE instance_id = ? AND type = 'web_chat'").get(req.instance.id);
+  const webChat = await db.get("SELECT * FROM channel_configs WHERE instance_id = ? AND type = 'web_chat'", req.instance.id);
   if (!webChat || webChat.status !== "active") return sendError(res, 409, "Web Chat 通道未启用");
 
   const content = String(req.body.message || "").trim();
   if (!content) return sendError(res, 400, "消息不能为空");
 
-  const model = db.prepare("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1").get(req.instance.id);
-  const enabledSkills = db.prepare(`
+  const model = await db.get("SELECT * FROM model_configs WHERE instance_id = ? AND is_default = 1", req.instance.id);
+  const enabledSkills = await db.all(`
     SELECT s.name
     FROM skill_installs si
     JOIN skills s ON s.id = si.skill_id
     WHERE si.instance_id = ? AND si.status = 'enabled'
     ORDER BY s.name ASC
-  `).all(req.instance.id);
+  `, req.instance.id);
   const userTokens = estimateTokens(content);
   const stamp = now();
   const userMessageId = createId("msg");
 
-  db.prepare(`
+  await db.run(`
     INSERT INTO chat_messages (id, instance_id, role, content, token_estimate, created_at)
     VALUES (?, ?, 'user', ?, ?, ?)
-  `).run(userMessageId, req.instance.id, content, userTokens, stamp);
+  `, userMessageId, req.instance.id, content, userTokens, stamp);
 
   if (req.instance.node_type === "provider") {
-    const recentMessages = db.prepare(`
+    const recentRows = await db.all(`
       SELECT id, role, content, token_estimate, created_at
       FROM chat_messages
       WHERE instance_id = ?
       ORDER BY created_at DESC
       LIMIT 20
-    `).all(req.instance.id).reverse().map((message) => ({
+    `, req.instance.id);
+    const recentMessages = recentRows.reverse().map((message) => ({
       id: message.id,
       role: message.role,
       content: message.content,
       tokenEstimate: message.token_estimate,
       createdAt: message.created_at
     }));
-    const taskId = enqueueNodeTask(req.instance.node_id, "chat", {
+    const taskId = await enqueueNodeTask(req.instance.node_id, "chat", {
       instanceId: req.instance.id,
       messageId: userMessageId,
       message: content,
@@ -1977,8 +1976,8 @@ app.post("/api/instances/:id/chat", requireAuth, requireInstance, (req, res) => 
       enabledSkills: enabledSkills.map((skill) => skill.name),
       channel: "web_chat"
     }, req.instance.id);
-    writeAudit(req.user.id, req.instance.id, "chat.message.queued", { taskId, tokens: userTokens });
-    writeInstanceLog(req.instance.id, "info", "runtime", "Web Chat 消息已派发到 Provider 节点", { taskId });
+    await writeAudit(req.user.id, req.instance.id, "chat.message.queued", { taskId, tokens: userTokens });
+    await writeInstanceLog(req.instance.id, "info", "runtime", "Web Chat 消息已派发到 Provider 节点", { taskId });
     return res.status(202).json({
       status: "queued",
       taskId,
@@ -2019,28 +2018,28 @@ app.post("/api/instances/:id/chat", requireAuth, requireInstance, (req, res) => 
   });
   if (execution.error || execution.status !== 0) {
     const detail = execution.error?.message || execution.stderr || `exit ${execution.status}`;
-    writeInstanceLog(req.instance.id, "error", "runtime", "本地 Agent 聊天入口执行失败", { error: detail });
+    await writeInstanceLog(req.instance.id, "error", "runtime", "本地 Agent 聊天入口执行失败", { error: detail });
     return sendError(res, 502, "本地 Agent 执行失败", detail);
   }
 
   const answer = String(execution.stdout || "").trim();
   if (!answer) {
-    writeInstanceLog(req.instance.id, "error", "runtime", "本地 Agent 聊天入口没有返回内容");
+    await writeInstanceLog(req.instance.id, "error", "runtime", "本地 Agent 聊天入口没有返回内容");
     return sendError(res, 502, "本地 Agent 没有返回内容");
   }
   const assistantTokens = estimateTokens(answer);
-  db.prepare(`
+  await db.run(`
     INSERT INTO chat_messages (id, instance_id, role, content, token_estimate, created_at)
     VALUES (?, ?, 'assistant', ?, ?, ?)
-  `).run(createId("msg"), req.instance.id, answer, assistantTokens, now());
+  `, createId("msg"), req.instance.id, answer, assistantTokens, now());
 
-  recordTokenUsage(req.instance, userTokens + assistantTokens, {
+  await recordTokenUsage(req.instance, userTokens + assistantTokens, {
     provider: model?.provider,
     model: model?.model,
     channel: "web_chat",
     runtime: "local-sandbox"
   });
-  writeAudit(req.user.id, req.instance.id, "chat.message", { tokens: userTokens + assistantTokens, runtime: "local-sandbox" });
+  await writeAudit(req.user.id, req.instance.id, "chat.message", { tokens: userTokens + assistantTokens, runtime: "local-sandbox" });
 
   res.status(201).json({
     message: {
@@ -2052,8 +2051,8 @@ app.post("/api/instances/:id/chat", requireAuth, requireInstance, (req, res) => 
   });
 });
 
-app.get("/api/skills", requireAuth, (req, res) => {
-  const rows = db.prepare("SELECT * FROM skills ORDER BY name ASC").all();
+app.get("/api/skills", requireAuth, async (req, res) => {
+  const rows = await db.all("SELECT * FROM skills ORDER BY name ASC");
   res.json({
     skills: rows.map((row) => ({
       id: row.id,
@@ -2067,8 +2066,8 @@ app.get("/api/skills", requireAuth, (req, res) => {
   });
 });
 
-app.get("/api/instances/:id/skills", requireAuth, requireInstance, (req, res) => {
-  const rows = db.prepare(`
+app.get("/api/instances/:id/skills", requireAuth, requireInstance, async (req, res) => {
+  const rows = await db.all(`
     SELECT
       s.*,
       si.id AS install_id,
@@ -2077,7 +2076,7 @@ app.get("/api/instances/:id/skills", requireAuth, requireInstance, (req, res) =>
     FROM skills s
     LEFT JOIN skill_installs si ON si.skill_id = s.id AND si.instance_id = ?
     ORDER BY s.name ASC
-  `).all(req.instance.id);
+  `, req.instance.id);
   res.json({
     skills: rows.map((row) => ({
       id: row.id,
@@ -2094,60 +2093,59 @@ app.get("/api/instances/:id/skills", requireAuth, requireInstance, (req, res) =>
   });
 });
 
-app.post("/api/instances/:id/skills/:skillId/install", requireAuth, requireInstance, (req, res) => {
-  const skill = db.prepare("SELECT * FROM skills WHERE id = ? OR slug = ?").get(req.params.skillId, req.params.skillId);
+app.post("/api/instances/:id/skills/:skillId/install", requireAuth, requireInstance, async (req, res) => {
+  const skill = await db.get("SELECT * FROM skills WHERE id = ? OR slug = ?", req.params.skillId, req.params.skillId);
   if (!skill) return sendError(res, 404, "技能不存在");
-  db.prepare(`
+  await db.run(`
     INSERT INTO skill_installs (
       id, instance_id, skill_id, version, status, permissions_json, created_at, updated_at
     )
     VALUES (?, ?, ?, ?, 'enabled', ?, ?, ?)
     ON CONFLICT(instance_id, skill_id)
     DO UPDATE SET status = 'enabled', updated_at = excluded.updated_at
-  `).run(createId("ski"), req.instance.id, skill.id, skill.version, skill.permissions_json, now(), now());
-  writeAudit(req.user.id, req.instance.id, "skill.install", { skillId: skill.id });
-  writeInstanceLog(req.instance.id, "info", "skill", `${skill.name} 已安装并启用`);
+  `, createId("ski"), req.instance.id, skill.id, skill.version, skill.permissions_json, now(), now());
+  await writeAudit(req.user.id, req.instance.id, "skill.install", { skillId: skill.id });
+  await writeInstanceLog(req.instance.id, "info", "skill", `${skill.name} 已安装并启用`);
   res.json({ ok: true });
 });
 
-app.patch("/api/instances/:id/skills/:skillId", requireAuth, requireInstance, (req, res) => {
+app.patch("/api/instances/:id/skills/:skillId", requireAuth, requireInstance, async (req, res) => {
   const status = String(req.body.status || "");
   if (!["enabled", "disabled"].includes(status)) return sendError(res, 400, "技能状态不合法");
-  const skill = db.prepare("SELECT * FROM skills WHERE id = ? OR slug = ?").get(req.params.skillId, req.params.skillId);
+  const skill = await db.get("SELECT * FROM skills WHERE id = ? OR slug = ?", req.params.skillId, req.params.skillId);
   if (!skill) return sendError(res, 404, "技能不存在");
-  const installed = db.prepare("SELECT * FROM skill_installs WHERE instance_id = ? AND skill_id = ?")
-    .get(req.instance.id, skill.id);
+  const installed = await db.get("SELECT * FROM skill_installs WHERE instance_id = ? AND skill_id = ?", req.instance.id, skill.id);
   if (!installed) return sendError(res, 409, "技能尚未安装");
-  db.prepare("UPDATE skill_installs SET status = ?, updated_at = ? WHERE id = ?").run(status, now(), installed.id);
-  writeAudit(req.user.id, req.instance.id, "skill.toggle", { skillId: skill.id, status });
-  writeInstanceLog(req.instance.id, "info", "skill", `${skill.name} 已${status === "enabled" ? "启用" : "禁用"}`);
+  await db.run("UPDATE skill_installs SET status = ?, updated_at = ? WHERE id = ?", status, now(), installed.id);
+  await writeAudit(req.user.id, req.instance.id, "skill.toggle", { skillId: skill.id, status });
+  await writeInstanceLog(req.instance.id, "info", "skill", `${skill.name} 已${status === "enabled" ? "启用" : "禁用"}`);
   res.json({ ok: true });
 });
 
-app.delete("/api/instances/:id/skills/:skillId", requireAuth, requireInstance, (req, res) => {
-  const skill = db.prepare("SELECT * FROM skills WHERE id = ? OR slug = ?").get(req.params.skillId, req.params.skillId);
+app.delete("/api/instances/:id/skills/:skillId", requireAuth, requireInstance, async (req, res) => {
+  const skill = await db.get("SELECT * FROM skills WHERE id = ? OR slug = ?", req.params.skillId, req.params.skillId);
   if (!skill) return sendError(res, 404, "技能不存在");
-  db.prepare("DELETE FROM skill_installs WHERE instance_id = ? AND skill_id = ?").run(req.instance.id, skill.id);
-  writeAudit(req.user.id, req.instance.id, "skill.uninstall", { skillId: skill.id });
-  writeInstanceLog(req.instance.id, "warn", "skill", `${skill.name} 已卸载`);
+  await db.run("DELETE FROM skill_installs WHERE instance_id = ? AND skill_id = ?", req.instance.id, skill.id);
+  await writeAudit(req.user.id, req.instance.id, "skill.uninstall", { skillId: skill.id });
+  await writeInstanceLog(req.instance.id, "warn", "skill", `${skill.name} 已卸载`);
   res.json({ ok: true });
 });
 
-app.get("/api/instances/:id/logs", requireAuth, requireInstance, (req, res) => {
-  const logs = db.prepare(`
+app.get("/api/instances/:id/logs", requireAuth, requireInstance, async (req, res) => {
+  const logs = await db.all(`
     SELECT * FROM instance_logs
     WHERE instance_id = ?
     ORDER BY created_at DESC
     LIMIT 200
-  `).all(req.instance.id);
-  const audits = db.prepare(`
+  `, req.instance.id);
+  const audits = await db.all(`
     SELECT a.*, u.email AS actor_email
     FROM audit_logs a
     LEFT JOIN users u ON u.id = a.actor_id
     WHERE a.instance_id = ?
     ORDER BY a.created_at DESC
     LIMIT 200
-  `).all(req.instance.id);
+  `, req.instance.id);
   res.json({
     logs: logs.map((row) => ({
       id: row.id,
@@ -2167,15 +2165,15 @@ app.get("/api/instances/:id/logs", requireAuth, requireInstance, (req, res) => {
   });
 });
 
-app.get("/api/instances/:id/usage", requireAuth, requireInstance, (req, res) => {
-  const records = db.prepare(`
+app.get("/api/instances/:id/usage", requireAuth, requireInstance, async (req, res) => {
+  const records = await db.all(`
     SELECT * FROM usage_records
     WHERE instance_id = ?
     ORDER BY created_at DESC
     LIMIT 200
-  `).all(req.instance.id);
+  `, req.instance.id);
   res.json({
-    summary: estimateInstanceUsage(req.instance),
+    summary: await estimateInstanceUsage(req.instance),
     records: records.map((row) => ({
       id: row.id,
       type: row.type,
@@ -2188,35 +2186,52 @@ app.get("/api/instances/:id/usage", requireAuth, requireInstance, (req, res) => 
   });
 });
 
-app.get("/api/admin/overview", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/admin/overview", requireAuth, requireAdmin, async (req, res) => {
+  const [
+    usersCount,
+    providersCount,
+    approvedProvidersCount,
+    templatesCount,
+    instancesCount,
+    runningInstancesCount,
+    providerNodesCount
+  ] = await Promise.all([
+    db.get("SELECT COUNT(*) AS n FROM users"),
+    db.get("SELECT COUNT(*) AS n FROM provider_profiles"),
+    db.get("SELECT COUNT(*) AS n FROM provider_profiles WHERE status = 'approved'"),
+    db.get("SELECT COUNT(*) AS n FROM agent_templates"),
+    db.get("SELECT COUNT(*) AS n FROM instances"),
+    db.get("SELECT COUNT(*) AS n FROM instances WHERE status = 'running'"),
+    db.get("SELECT COUNT(*) AS n FROM nodes WHERE type = 'provider'")
+  ]);
   const counts = {
-    users: db.prepare("SELECT COUNT(*) AS n FROM users").get().n,
-    providers: db.prepare("SELECT COUNT(*) AS n FROM provider_profiles").get().n,
-    approvedProviders: db.prepare("SELECT COUNT(*) AS n FROM provider_profiles WHERE status = 'approved'").get().n,
-    templates: db.prepare("SELECT COUNT(*) AS n FROM agent_templates").get().n,
-    instances: db.prepare("SELECT COUNT(*) AS n FROM instances").get().n,
-    runningInstances: db.prepare("SELECT COUNT(*) AS n FROM instances WHERE status = 'running'").get().n,
-    providerNodes: db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE type = 'provider'").get().n
+    users: Number(usersCount?.n || 0),
+    providers: Number(providersCount?.n || 0),
+    approvedProviders: Number(approvedProvidersCount?.n || 0),
+    templates: Number(templatesCount?.n || 0),
+    instances: Number(instancesCount?.n || 0),
+    runningInstances: Number(runningInstancesCount?.n || 0),
+    providerNodes: Number(providerNodesCount?.n || 0)
   };
-  const nodes = db.prepare(`
+  const nodes = await db.all(`
     SELECT n.*, p.display_name AS provider_display_name, p.status AS provider_status
     FROM nodes n
     LEFT JOIN provider_profiles p ON p.id = n.provider_profile_id
     ORDER BY n.region ASC, n.created_at ASC
-  `).all();
-  const recentErrors = db.prepare(`
+  `);
+  const recentErrors = await db.all(`
     SELECT l.*, i.name AS instance_name
     FROM instance_logs l
     LEFT JOIN instances i ON i.id = l.instance_id
     WHERE l.level = 'error'
     ORDER BY l.created_at DESC
     LIMIT 20
-  `).all();
-  const usage = db.prepare(`
+  `);
+  const usage = await db.all(`
     SELECT type, SUM(quantity) AS quantity, SUM(price_estimate_cents) AS price
     FROM usage_records
     GROUP BY type
-  `).all();
+  `);
   res.json({
     counts,
     nodes,
@@ -2233,8 +2248,8 @@ app.get("/api/admin/overview", requireAuth, requireAdmin, (req, res) => {
   });
 });
 
-app.get("/api/admin/instances", requireAuth, requireAdmin, (req, res) => {
-  const rows = db.prepare(`
+app.get("/api/admin/instances", requireAuth, requireAdmin, async (req, res) => {
+  const rows = await db.all(`
     SELECT
       i.*,
       t.name AS template_name,
@@ -2254,55 +2269,55 @@ app.get("/api/admin/instances", requireAuth, requireAdmin, (req, res) => {
     JOIN price_plans p ON p.id = i.plan_id
     JOIN nodes n ON n.id = i.node_id
     ORDER BY i.created_at DESC
-  `).all();
-  res.json({ instances: rows.map(serializeInstance) });
+  `);
+  res.json({ instances: await Promise.all(rows.map(serializeInstance)) });
 });
 
-app.get("/api/admin/nodes", requireAuth, requireAdmin, (req, res) => {
-  const rows = db.prepare(`
+app.get("/api/admin/nodes", requireAuth, requireAdmin, async (req, res) => {
+  const rows = await db.all(`
     SELECT n.*, p.display_name AS provider_display_name, p.status AS provider_status
     FROM nodes n
     LEFT JOIN provider_profiles p ON p.id = n.provider_profile_id
     ORDER BY n.region ASC, n.created_at ASC
-  `).all();
+  `);
   res.json({ nodes: rows.map(serializeNode) });
 });
 
-app.get("/api/admin/providers", requireAuth, requireAdmin, (req, res) => {
-  const rows = db.prepare(`
+app.get("/api/admin/providers", requireAuth, requireAdmin, async (req, res) => {
+  const rows = await db.all(`
     SELECT
       p.*,
       u.email AS user_email
     FROM provider_profiles p
     JOIN users u ON u.id = p.user_id
     ORDER BY CASE p.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, p.created_at DESC
-  `).all();
+  `);
   res.json({
-    providers: rows.map((row) => {
-      const nodeCounts = db.prepare(`
+    providers: await Promise.all(rows.map(async (row) => {
+      const nodeCounts = await db.get(`
         SELECT
           COUNT(*) AS node_count,
           SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) AS healthy_node_count
         FROM nodes
         WHERE provider_profile_id = ?
-      `).get(row.id);
-      const earnings = db.prepare(`
+      `, row.id);
+      const earnings = await db.get(`
         SELECT COALESCE(SUM(provider_cents), 0) AS provider_cents
         FROM provider_ledger_entries
         WHERE provider_profile_id = ?
-      `).get(row.id);
+      `, row.id);
       return {
         ...serializeProviderProfile(row),
         nodeCount: Number(nodeCounts?.node_count || 0),
         healthyNodeCount: Number(nodeCounts?.healthy_node_count || 0),
         providerCents: Number(earnings?.provider_cents || 0)
       };
-    })
+    }))
   });
 });
 
-app.patch("/api/admin/providers/:id", requireAuth, requireAdmin, (req, res) => {
-  const provider = getProviderProfileById(req.params.id);
+app.patch("/api/admin/providers/:id", requireAuth, requireAdmin, async (req, res) => {
+  const provider = await getProviderProfileById(req.params.id);
   if (!provider) return sendError(res, 404, "Provider 不存在");
   const status = String(req.body.status || provider.status);
   if (!["pending", "approved", "rejected", "suspended"].includes(status)) return sendError(res, 400, "Provider 状态不合法");
@@ -2312,7 +2327,7 @@ app.patch("/api/admin/providers/:id", requireAuth, requireAdmin, (req, res) => {
   const rejectionReason = status === "rejected"
     ? String(req.body.rejectionReason || "未通过审核").trim().slice(0, 500)
     : null;
-  db.prepare(`
+  await db.run(`
     UPDATE provider_profiles
     SET status = ?,
         platform_fee_percent = ?,
@@ -2321,14 +2336,13 @@ app.patch("/api/admin/providers/:id", requireAuth, requireAdmin, (req, res) => {
         reviewed_by = ?,
         updated_at = ?
     WHERE id = ?
-  `).run(status, platformFeePercent, rejectionReason, now(), req.user.id, now(), provider.id);
-  db.prepare("UPDATE nodes SET platform_fee_percent = ?, updated_at = ? WHERE provider_profile_id = ?")
-    .run(platformFeePercent, now(), provider.id);
-  writeAudit(req.user.id, null, "admin.provider.review", { providerProfileId: provider.id, status, platformFeePercent });
-  res.json({ provider: serializeProviderProfile(getProviderProfileById(provider.id)) });
+  `, status, platformFeePercent, rejectionReason, now(), req.user.id, now(), provider.id);
+  await db.run("UPDATE nodes SET platform_fee_percent = ?, updated_at = ? WHERE provider_profile_id = ?", platformFeePercent, now(), provider.id);
+  await writeAudit(req.user.id, null, "admin.provider.review", { providerProfileId: provider.id, status, platformFeePercent });
+  res.json({ provider: serializeProviderProfile(await getProviderProfileById(provider.id)) });
 });
 
-app.post("/api/admin/templates", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/admin/templates", requireAuth, requireAdmin, async (req, res) => {
   const name = String(req.body.name || "").trim();
   const framework = String(req.body.framework || "custom");
   const description = String(req.body.description || "").trim();
@@ -2336,15 +2350,14 @@ app.post("/api/admin/templates", requireAuth, requireAdmin, (req, res) => {
   if (!["hermes", "openclaw", "custom"].includes(framework)) return sendError(res, 400, "框架不合法");
 
   const id = createId("tpl");
-  db.prepare(`
+  await db.run(`
     INSERT INTO agent_templates (
       id, name, framework, description, official, status, base_price_cents,
       default_model_provider, default_model, capabilities_json,
       default_channels_json, default_skills_json, created_at, updated_at
     )
     VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
+  `, id,
     name,
     framework,
     description,
@@ -2358,12 +2371,12 @@ app.post("/api/admin/templates", requireAuth, requireAdmin, (req, res) => {
     now(),
     now()
   );
-  writeAudit(req.user.id, null, "admin.template.create", { templateId: id });
-  res.status(201).json({ template: getTemplateWithPlans(id) });
+  await writeAudit(req.user.id, null, "admin.template.create", { templateId: id });
+  res.status(201).json({ template: await getTemplateWithPlans(id) });
 });
 
-app.patch("/api/admin/templates/:id", requireAuth, requireAdmin, (req, res) => {
-  const template = db.prepare("SELECT * FROM agent_templates WHERE id = ?").get(req.params.id);
+app.patch("/api/admin/templates/:id", requireAuth, requireAdmin, async (req, res) => {
+  const template = await db.get("SELECT * FROM agent_templates WHERE id = ?", req.params.id);
   if (!template) return sendError(res, 404, "模板不存在");
   const next = {
     name: req.body.name === undefined ? template.name : String(req.body.name).trim(),
@@ -2372,19 +2385,19 @@ app.patch("/api/admin/templates/:id", requireAuth, requireAdmin, (req, res) => {
     basePriceCents: req.body.basePriceCents === undefined ? template.base_price_cents : Number(req.body.basePriceCents)
   };
   if (!["active", "draft", "archived"].includes(next.status)) return sendError(res, 400, "模板状态不合法");
-  db.prepare(`
+  await db.run(`
     UPDATE agent_templates
     SET name = ?, description = ?, status = ?, base_price_cents = ?, updated_at = ?
     WHERE id = ?
-  `).run(next.name, next.description, next.status, next.basePriceCents, now(), template.id);
-  writeAudit(req.user.id, null, "admin.template.update", { templateId: template.id, status: next.status });
-  res.json({ template: getTemplateWithPlans(template.id) });
+  `, next.name, next.description, next.status, next.basePriceCents, now(), template.id);
+  await writeAudit(req.user.id, null, "admin.template.update", { templateId: template.id, status: next.status });
+  res.json({ template: await getTemplateWithPlans(template.id) });
 });
 
 if (process.env.NODE_ENV === "production") {
   const distDir = path.join(rootDir, "dist");
   app.use(express.static(distDir));
-  app.get(/.*/, (req, res) => {
+  app.get(/.*/, async (req, res) => {
     res.sendFile(path.join(distDir, "index.html"));
   });
 }
@@ -2394,7 +2407,7 @@ app.use((err, req, res, next) => {
   sendError(res, 500, "服务内部错误", err.message);
 });
 
-server.on("upgrade", (request, socket, head) => {
+server.on("upgrade", async (request, socket, head) => {
   const url = new URL(request.url, "http://127.0.0.1");
   if (url.pathname !== "/ws/terminal") {
     socket.destroy();
@@ -2406,9 +2419,9 @@ server.on("upgrade", (request, socket, head) => {
     const instanceId = url.searchParams.get("instanceId");
     if (!token || !instanceId) throw new Error("missing token or instanceId");
     const payload = verifyToken(token);
-    const user = db.prepare("SELECT id, email, role, created_at FROM users WHERE id = ?").get(payload.sub);
+    const user = await db.get("SELECT id, email, role, created_at FROM users WHERE id = ?", payload.sub);
     if (!user) throw new Error("invalid user");
-    const instance = getInstance(instanceId, user);
+    const instance = await getInstance(instanceId, user);
     if (!instance || instance.status !== "running") throw new Error("instance is not running");
 
     wss.handleUpgrade(request, socket, head, (ws) => {
@@ -2424,8 +2437,8 @@ wss.on("connection", (ws, request, { user, instance }) => {
   const shell = process.env.SHELL || "/bin/sh";
   let commandBuffer = "";
   const startedAt = now();
-  writeAudit(user.id, instance.id, "terminal.start", { shell });
-  writeInstanceLog(instance.id, "info", "terminal", "终端会话已开始", { userId: user.id });
+  backgroundWrite(writeAudit(user.id, instance.id, "terminal.start", { shell }));
+  backgroundWrite(writeInstanceLog(instance.id, "info", "terminal", "终端会话已开始", { userId: user.id }));
 
   const sendOutput = (data) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "output", data: String(data) }));
@@ -2470,9 +2483,9 @@ wss.on("connection", (ws, request, { user, instance }) => {
       ws.close();
     });
     sendOutput(`OpenAsstAI terminal fallback connected to ${instance.name}\r\nWorkspace: ${instance.workspace_path}\r\n$ `);
-    writeInstanceLog(instance.id, "warn", "terminal", "PTY 启动失败，已降级为普通 shell 管道", {
+    backgroundWrite(writeInstanceLog(instance.id, "warn", "terminal", "PTY 启动失败，已降级为普通 shell 管道", {
       error: error.message
-    });
+    }));
   }
 
   ws.on("message", (raw) => {
@@ -2500,9 +2513,9 @@ wss.on("connection", (ws, request, { user, instance }) => {
         const command = commandBuffer.trim();
         commandBuffer = "";
         if (command) {
-          writeAudit(user.id, instance.id, "terminal.command", {
+          backgroundWrite(writeAudit(user.id, instance.id, "terminal.command", {
             command: command.slice(0, 240)
-          });
+          }));
         }
       } else if (char === "\u007f") {
         commandBuffer = commandBuffer.slice(0, -1);
@@ -2515,8 +2528,8 @@ wss.on("connection", (ws, request, { user, instance }) => {
   ws.on("close", () => {
     if (ptyProcess) ptyProcess.kill();
     else child?.kill("SIGHUP");
-    writeAudit(user.id, instance.id, "terminal.end", { startedAt, endedAt: now() });
-    writeInstanceLog(instance.id, "info", "terminal", "终端会话已结束", { userId: user.id });
+    backgroundWrite(writeAudit(user.id, instance.id, "terminal.end", { startedAt, endedAt: now() }));
+    backgroundWrite(writeInstanceLog(instance.id, "info", "terminal", "终端会话已结束", { userId: user.id }));
   });
 });
 

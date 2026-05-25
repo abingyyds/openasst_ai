@@ -1,4 +1,5 @@
-import { runMigrations } from "../db.js";
+import { db, runMigrations } from "../db.js";
 
-runMigrations();
+await runMigrations();
 console.log("Database migrations applied.");
+await db.close();

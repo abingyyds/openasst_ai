@@ -20,6 +20,8 @@ export const config = {
   port: Number(process.env.PORT || 4000),
   host: process.env.HOST || (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1"),
   publicBaseUrl: process.env.PUBLIC_BASE_URL || defaultPublicBaseUrl,
+  databaseUrl: process.env.DATABASE_URL || "",
+  databaseSsl: process.env.DATABASE_SSL === "true",
   jwtSecret: process.env.JWT_SECRET || "dev-openasstai-jwt-secret-change-me",
   secretKey: process.env.SECRET_KEY || "dev-openasstai-secret-key-change-me",
   bootstrapAdminEmail: process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@openasst.ai",

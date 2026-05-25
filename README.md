@@ -43,7 +43,24 @@ Demo 账号：
 
 生产环境中需要设置 `BOOTSTRAP_ADMIN_PASSWORD`；`SEED_DEMO_USER` 默认关闭，避免公开部署创建固定密码 Demo 用户。
 
-Railway 部署时建议给服务挂载一个 Volume。应用会自动使用 Railway 提供的 `RAILWAY_VOLUME_MOUNT_PATH` 保存 SQLite 数据库和实例工作区；如果不挂载 Volume，部署重建后本地写入数据会丢失。
+## Railway 部署
+
+仓库已包含 `railway.json`，Railway 会执行 `npm run build`，启动时执行 `npm run start`，健康检查路径为 `/api/health`。
+
+Railway 上建议添加一个 PostgreSQL 服务，并把应用服务连接到它。应用检测到 `DATABASE_URL` 后会自动使用 Postgres；如果没有 `DATABASE_URL`，才会退回本地 SQLite。
+
+需要配置的变量：
+
+- `BOOTSTRAP_ADMIN_EMAIL`：管理员邮箱
+- `BOOTSTRAP_ADMIN_PASSWORD`：强密码
+- `JWT_SECRET`：长随机字符串
+- `SECRET_KEY`：32 字节以上随机字符串
+- `PUBLIC_BASE_URL`：Railway 公网域名，例如 `https://你的服务.up.railway.app`
+- `DATABASE_URL`：Railway Postgres 自动提供
+- `DATABASE_SSL=false`：Railway 内网 Postgres 通常不需要 SSL；外部数据库需要 SSL 时改为 `true`
+- `SEED_DEMO_USER=false`：公开生产环境建议关闭
+
+Volume 仍然建议挂载，但用途改为保存实例工作区和运行时文件。数据库主存储应使用 Postgres，不建议长期依赖 SQLite 文件作为生产主库。
 
 ## 当前 Runtime 说明
 
@@ -51,5 +68,6 @@ Railway 部署时建议给服务挂载一个 Volume。应用会自动使用 Rail
 
 - 每个实例有独立工作目录：`runtime/workspaces/<instance_id>`
 - Web Terminal 通过 `node-pty` 连接实例工作目录
-- 数据存储使用 Node 内置 SQLite：`data/openasstai.sqlite`
+- 本地默认数据存储使用 Node 内置 SQLite：`data/openasstai.sqlite`
+- Railway/生产环境推荐使用 PostgreSQL：设置 `DATABASE_URL`
 - Docker/microVM Runtime 边界已按架构保留，后续可替换沙箱适配器

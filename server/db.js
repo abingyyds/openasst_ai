@@ -1,15 +1,187 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { DatabaseSync } from "node:sqlite";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import bcrypt from "bcryptjs";
+import pg from "pg";
 import { config } from "./config.js";
 
-fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
+const { Pool, types } = pg;
+const txStore = new AsyncLocalStorage();
 
-export const db = new DatabaseSync(config.databasePath);
-db.exec("PRAGMA foreign_keys = ON");
-db.exec("PRAGMA journal_mode = WAL");
+for (const oid of [20, 21, 23, 700, 701, 1700]) {
+  types.setTypeParser(oid, Number);
+}
+
+function normalizeArgs(args) {
+  return args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+}
+
+function convertPlaceholders(sql) {
+  let index = 1;
+  let output = "";
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < sql.length; i += 1) {
+    const char = sql[i];
+    const next = sql[i + 1];
+
+    if (inSingle) {
+      output += char;
+      if (char === "'" && next === "'") {
+        output += next;
+        i += 1;
+      } else if (char === "'") {
+        inSingle = false;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      output += char;
+      if (char === '"') inDouble = false;
+      continue;
+    }
+
+    if (char === "'") {
+      output += char;
+      inSingle = true;
+      continue;
+    }
+
+    if (char === '"') {
+      output += char;
+      inDouble = true;
+      continue;
+    }
+
+    if (char === "?") {
+      output += `$${index}`;
+      index += 1;
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
+}
+
+function toPostgresSql(sql) {
+  const insertOrIgnore = /\bINSERT\s+OR\s+IGNORE\s+INTO\b/i.test(sql);
+  let next = sql.replace(/\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi, "INSERT INTO");
+  next = convertPlaceholders(next);
+  if (insertOrIgnore && !/\bON\s+CONFLICT\b/i.test(next)) {
+    next = `${next.trim().replace(/;+\s*$/, "")} ON CONFLICT DO NOTHING`;
+  }
+  return next;
+}
+
+function toSqliteSql(sql) {
+  return sql.replace(/\bLEAST\s*\(/gi, "MIN(");
+}
+
+class AppDatabase {
+  constructor() {
+    this.kind = config.databaseUrl ? "postgres" : "sqlite";
+
+    if (this.kind === "postgres") {
+      this.pool = new Pool({
+        connectionString: config.databaseUrl,
+        max: Number(process.env.PGPOOL_MAX || 10),
+        ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined
+      });
+      return;
+    }
+
+    fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
+    this.sqlite = new DatabaseSync(config.databasePath);
+    this.sqlite.exec("PRAGMA foreign_keys = ON");
+    this.sqlite.exec("PRAGMA journal_mode = WAL");
+  }
+
+  prepare(sql) {
+    return {
+      get: (...args) => this.get(sql, ...args),
+      all: (...args) => this.all(sql, ...args),
+      run: (...args) => this.run(sql, ...args)
+    };
+  }
+
+  async get(sql, ...args) {
+    const rows = await this.all(sql, ...args);
+    return rows[0];
+  }
+
+  async all(sql, ...args) {
+    const params = normalizeArgs(args);
+    if (this.kind === "postgres") {
+      const client = txStore.getStore() || this.pool;
+      const result = await client.query(toPostgresSql(sql), params);
+      return result.rows;
+    }
+    return this.sqlite.prepare(toSqliteSql(sql)).all(...params);
+  }
+
+  async run(sql, ...args) {
+    const params = normalizeArgs(args);
+    if (this.kind === "postgres") {
+      const client = txStore.getStore() || this.pool;
+      const result = await client.query(toPostgresSql(sql), params);
+      return { changes: result.rowCount };
+    }
+    return this.sqlite.prepare(toSqliteSql(sql)).run(...params);
+  }
+
+  async exec(sql) {
+    if (this.kind === "postgres") {
+      const client = txStore.getStore() || this.pool;
+      await client.query(sql);
+      return;
+    }
+    this.sqlite.exec(toSqliteSql(sql));
+  }
+
+  async transaction(callback) {
+    if (this.kind === "postgres") {
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN");
+        return await txStore.run(client, async () => {
+          try {
+            const result = await callback();
+            await client.query("COMMIT");
+            return result;
+          } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+          }
+        });
+      } finally {
+        client.release();
+      }
+    }
+
+    await this.exec("BEGIN");
+    try {
+      const result = await callback();
+      await this.exec("COMMIT");
+      return result;
+    } catch (error) {
+      await this.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async close() {
+    if (this.kind === "postgres") await this.pool.end();
+    else this.sqlite.close();
+  }
+}
+
+export const db = new AppDatabase();
 
 export function now() {
   return new Date().toISOString();
@@ -32,19 +204,39 @@ export function fromJson(value, fallback = {}) {
   }
 }
 
-function tableSql(name) {
-  return db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)?.sql || "";
+export async function tableExists(name) {
+  if (db.kind === "postgres") {
+    return Boolean(await db.get(
+      "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ?",
+      name
+    ));
+  }
+  return Boolean(await db.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", name));
 }
 
-function tableColumns(name) {
-  return new Set(db.prepare(`PRAGMA table_info(${name})`).all().map((column) => column.name));
+export async function tableColumns(name) {
+  if (db.kind === "postgres") {
+    const rows = await db.all(
+      "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ?",
+      name
+    );
+    return new Set(rows.map((column) => column.name));
+  }
+  const rows = await db.all(`PRAGMA table_info(${name})`);
+  return new Set(rows.map((column) => column.name));
 }
 
-function rebuildNodesTableForProviders() {
-  const sql = tableSql("nodes");
+async function tableSql(name) {
+  const row = await db.get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", name);
+  return row?.sql || "";
+}
+
+async function rebuildNodesTableForProviders() {
+  if (db.kind !== "sqlite") return;
+  const sql = await tableSql("nodes");
   if (!sql) return;
 
-  const columns = tableColumns("nodes");
+  const columns = await tableColumns("nodes");
   const needsRebuild =
     !sql.includes("'provider'") ||
     !columns.has("provider_profile_id") ||
@@ -56,10 +248,9 @@ function rebuildNodesTableForProviders() {
   const stamp = now();
   const expr = (column, fallback) => (columns.has(column) ? column : fallback);
 
-  try {
-    db.exec("PRAGMA foreign_keys = OFF");
-    db.exec("BEGIN");
-    db.exec(`
+  await db.transaction(async () => {
+    await db.exec("PRAGMA foreign_keys = OFF");
+    await db.exec(`
       CREATE TABLE nodes_next (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -85,7 +276,7 @@ function rebuildNodesTableForProviders() {
         updated_at TEXT NOT NULL
       );
     `);
-    db.exec(`
+    await db.exec(`
       INSERT INTO nodes_next (
         id, name, type, provider_profile_id, region, status,
         total_cpu, total_memory_mb, total_disk_gb,
@@ -119,23 +310,14 @@ function rebuildNodesTableForProviders() {
         ${expr("updated_at", `COALESCE(last_heartbeat_at, '${stamp}')`)}
       FROM nodes;
     `);
-    db.exec("DROP TABLE nodes");
-    db.exec("ALTER TABLE nodes_next RENAME TO nodes");
-    db.exec("COMMIT");
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      // Ignore rollback failure and surface the original migration error.
-    }
-    throw error;
-  } finally {
-    db.exec("PRAGMA foreign_keys = ON");
-  }
+    await db.exec("DROP TABLE nodes");
+    await db.exec("ALTER TABLE nodes_next RENAME TO nodes");
+    await db.exec("PRAGMA foreign_keys = ON");
+  });
 }
 
-function migrateAgentTemplateInstallMetadata() {
-  const columns = tableColumns("agent_templates");
+async function migrateAgentTemplateInstallMetadata() {
+  const columns = await tableColumns("agent_templates");
   if (!columns.size) return;
 
   const additions = [
@@ -149,19 +331,19 @@ function migrateAgentTemplateInstallMetadata() {
 
   for (const [name, definition] of additions) {
     if (!columns.has(name)) {
-      db.exec(`ALTER TABLE agent_templates ADD COLUMN ${name} ${definition}`);
+      await db.exec(`ALTER TABLE agent_templates ADD COLUMN ${name} ${definition}`);
     }
   }
 }
 
-function migrateAgentTemplateProviderOwnership() {
-  const columns = tableColumns("agent_templates");
+async function migrateAgentTemplateProviderOwnership() {
+  const columns = await tableColumns("agent_templates");
   if (!columns.size || columns.has("provider_profile_id")) return;
-  db.exec("ALTER TABLE agent_templates ADD COLUMN provider_profile_id TEXT REFERENCES provider_profiles(id) ON DELETE SET NULL");
+  await db.exec("ALTER TABLE agent_templates ADD COLUMN provider_profile_id TEXT REFERENCES provider_profiles(id) ON DELETE SET NULL");
 }
 
-export function runMigrations() {
-  db.exec(`
+export async function runMigrations() {
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
@@ -382,10 +564,10 @@ export function runMigrations() {
     );
   `);
 
-  rebuildNodesTableForProviders();
-  migrateAgentTemplateInstallMetadata();
-  migrateAgentTemplateProviderOwnership();
-  db.exec(`
+  await rebuildNodesTableForProviders();
+  await migrateAgentTemplateInstallMetadata();
+  await migrateAgentTemplateProviderOwnership();
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_nodes_provider_profile ON nodes(provider_profile_id);
     CREATE INDEX IF NOT EXISTS idx_node_tasks_node_status ON node_tasks(node_id, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_provider_ledger_profile ON provider_ledger_entries(provider_profile_id, created_at);
@@ -393,38 +575,36 @@ export function runMigrations() {
   `);
 }
 
-export function seedDefaults() {
+export async function seedDefaults() {
   const stamp = now();
   if (!config.bootstrapAdminPassword) {
     throw new Error("BOOTSTRAP_ADMIN_PASSWORD must be set when NODE_ENV=production");
   }
 
-  const syncSeedUser = ({ id, email, password, role }) => {
+  const syncSeedUser = async ({ id, email, password, role }) => {
     const normalizedEmail = String(email || "").trim().toLowerCase();
     const passwordHash = bcrypt.hashSync(password, 10);
-    const existingByEmail = db.prepare("SELECT id FROM users WHERE email = ?").get(normalizedEmail);
+    const existingByEmail = await db.get("SELECT id FROM users WHERE email = ?", normalizedEmail);
 
     if (existingByEmail) {
-      db.prepare("UPDATE users SET password_hash = ?, role = ? WHERE id = ?")
-        .run(passwordHash, role, existingByEmail.id);
+      await db.run("UPDATE users SET password_hash = ?, role = ? WHERE id = ?", passwordHash, role, existingByEmail.id);
       return;
     }
 
-    const existingById = db.prepare("SELECT id FROM users WHERE id = ?").get(id);
+    const existingById = await db.get("SELECT id FROM users WHERE id = ?", id);
     if (existingById) {
-      db.prepare("UPDATE users SET email = ?, password_hash = ?, role = ? WHERE id = ?")
-        .run(normalizedEmail, passwordHash, role, id);
+      await db.run("UPDATE users SET email = ?, password_hash = ?, role = ? WHERE id = ?", normalizedEmail, passwordHash, role, id);
       return;
     }
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO users (id, email, password_hash, role, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(id, normalizedEmail, passwordHash, role, stamp);
+    `, id, normalizedEmail, passwordHash, role, stamp);
   };
 
   if (config.seedDemoUser) {
-    syncSeedUser({
+    await syncSeedUser({
       id: "usr_demo",
       email: config.demoEmail,
       password: config.demoPassword,
@@ -432,7 +612,7 @@ export function seedDefaults() {
     });
   }
 
-  syncSeedUser({
+  await syncSeedUser({
     id: "usr_admin",
     email: config.bootstrapAdminEmail,
     password: config.bootstrapAdminPassword,
@@ -494,34 +674,17 @@ export function seedDefaults() {
     }
   ];
 
-  const insertTemplate = db.prepare(`
-    INSERT OR IGNORE INTO agent_templates (
-      id, name, framework, description, official, status, base_price_cents, provider_profile_id,
-      default_model_provider, default_model, capabilities_json,
-      default_channels_json, default_skills_json, install_method, runtime_kind,
-      install_command, start_command, health_check, config_hints_json,
-      created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const updateTemplateInstallMetadata = db.prepare(`
-    UPDATE agent_templates
-    SET description = ?,
-        install_method = ?,
-        runtime_kind = ?,
-        install_command = ?,
-        start_command = ?,
-        health_check = ?,
-        config_hints_json = ?,
-        capabilities_json = ?,
-        default_channels_json = ?,
-        default_skills_json = ?,
-        updated_at = ?
-    WHERE id = ?
-  `);
-
   for (const template of templates) {
-    insertTemplate.run(
+    await db.run(`
+      INSERT OR IGNORE INTO agent_templates (
+        id, name, framework, description, official, status, base_price_cents, provider_profile_id,
+        default_model_provider, default_model, capabilities_json,
+        default_channels_json, default_skills_json, install_method, runtime_kind,
+        install_command, start_command, health_check, config_hints_json,
+        created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
       template.id,
       template.name,
       template.framework,
@@ -542,7 +705,21 @@ export function seedDefaults() {
       stamp,
       stamp
     );
-    updateTemplateInstallMetadata.run(
+    await db.run(`
+      UPDATE agent_templates
+      SET description = ?,
+          install_method = ?,
+          runtime_kind = ?,
+          install_command = ?,
+          start_command = ?,
+          health_check = ?,
+          config_hints_json = ?,
+          capabilities_json = ?,
+          default_channels_json = ?,
+          default_skills_json = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
       template.description,
       template.installMethod,
       template.runtimeKind,
@@ -558,49 +735,35 @@ export function seedDefaults() {
     );
   }
 
-  const insertPlan = db.prepare(`
-    INSERT OR IGNORE INTO price_plans (
-      id, template_id, name, cpu, memory_mb, disk_gb, region, price_per_hour_cents, created_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  for (const plan of [
+    ["plan_hermes_starter", "tpl_hermes_research", "Starter", 1, 1024, 10, "cn-shanghai", 18],
+    ["plan_hermes_plus", "tpl_hermes_research", "Plus", 2, 2048, 20, "cn-shanghai", 34],
+    ["plan_ops_starter", "tpl_openclaw_ops", "Starter", 1, 1536, 15, "cn-shanghai", 28],
+    ["plan_ops_plus", "tpl_openclaw_ops", "Plus", 2, 4096, 30, "sg-singapore", 52]
+  ]) {
+    await db.run(`
+      INSERT OR IGNORE INTO price_plans (
+        id, template_id, name, cpu, memory_mb, disk_gb, region, price_per_hour_cents, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, ...plan, stamp);
+  }
 
-  insertPlan.run("plan_hermes_starter", "tpl_hermes_research", "Starter", 1, 1024, 10, "cn-shanghai", 18, stamp);
-  insertPlan.run("plan_hermes_plus", "tpl_hermes_research", "Plus", 2, 2048, 20, "cn-shanghai", 34, stamp);
-  insertPlan.run("plan_ops_starter", "tpl_openclaw_ops", "Starter", 1, 1536, 15, "cn-shanghai", 28, stamp);
-  insertPlan.run("plan_ops_plus", "tpl_openclaw_ops", "Plus", 2, 4096, 30, "sg-singapore", 52, stamp);
-
-  db.prepare(`
+  await db.run(`
     INSERT OR IGNORE INTO nodes (
       id, name, type, region, status, total_cpu, total_memory_mb, total_disk_gb,
       available_cpu, available_memory_mb, available_disk_gb, last_heartbeat_at, created_at, updated_at
     )
     VALUES (?, ?, 'official', ?, 'healthy', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run("node_shanghai_1", "Official Shanghai 1", "cn-shanghai", 16, 32768, 500, 16, 32768, 500, stamp, stamp, stamp);
+  `, "node_shanghai_1", "Official Shanghai 1", "cn-shanghai", 16, 32768, 500, 16, 32768, 500, stamp, stamp, stamp);
 
-  db.prepare(`
+  await db.run(`
     INSERT OR IGNORE INTO nodes (
       id, name, type, region, status, total_cpu, total_memory_mb, total_disk_gb,
       available_cpu, available_memory_mb, available_disk_gb, last_heartbeat_at, created_at, updated_at
     )
     VALUES (?, ?, 'official', ?, 'healthy', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run("node_singapore_1", "Official Singapore 1", "sg-singapore", 12, 24576, 400, 12, 24576, 400, stamp, stamp, stamp);
-
-  const insertSkill = db.prepare(`
-    INSERT OR IGNORE INTO skills (
-      id, name, slug, version, description, permissions_json, runtime_flags_json
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-  const updateSkill = db.prepare(`
-    UPDATE skills
-    SET name = ?,
-        version = ?,
-        description = ?,
-        permissions_json = ?,
-        runtime_flags_json = ?
-    WHERE id = ?
-  `);
+  `, "node_singapore_1", "Official Singapore 1", "sg-singapore", 12, 24576, 400, 12, 24576, 400, stamp, stamp, stamp);
 
   const skills = [
     {
@@ -642,7 +805,12 @@ export function seedDefaults() {
   ];
 
   for (const skill of skills) {
-    insertSkill.run(
+    await db.run(`
+      INSERT OR IGNORE INTO skills (
+        id, name, slug, version, description, permissions_json, runtime_flags_json
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
       skill.id,
       skill.name,
       skill.slug,
@@ -651,7 +819,15 @@ export function seedDefaults() {
       toJson(skill.permissions),
       toJson(skill.flags)
     );
-    updateSkill.run(
+    await db.run(`
+      UPDATE skills
+      SET name = ?,
+          version = ?,
+          description = ?,
+          permissions_json = ?,
+          runtime_flags_json = ?
+      WHERE id = ?
+    `,
       skill.name,
       skill.version,
       skill.description,
@@ -662,7 +838,7 @@ export function seedDefaults() {
   }
 }
 
-export function initDatabase() {
-  runMigrations();
-  seedDefaults();
+export async function initDatabase() {
+  await runMigrations();
+  await seedDefaults();
 }
