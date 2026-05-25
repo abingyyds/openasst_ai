@@ -3,7 +3,6 @@ const strings = {
     nav: [
       "我的 Agent",
       "Agent 实例",
-      "Playground",
       "模型",
       "通道",
       "技能",
@@ -21,7 +20,6 @@ const strings = {
     nav: [
       "My Agents",
       "Agent Instances",
-      "Playground",
       "Models",
       "Channels",
       "Skills",
@@ -39,27 +37,10 @@ const strings = {
 
 const locale = "zh";
 const t = strings[locale];
-const defaultPlaygroundModelId = "custom_subrouter/hy3-preview";
-const playgroundStorageKey = "openasstai.playground.conversations.v1";
-const quickPrompts = [
-  "给 Hermes Agent 设计一个客服欢迎语。",
-  "比较 Hy3 preview 和 Claude Sonnet 的适用场景。",
-  "把这段用户需求拆成 Agent 技能清单。",
-  "生成一个 OpenAI-compatible 请求体示例。"
-];
 const state = {
   instance: null,
   agent: null,
-  logs: [],
-  playground: {
-    models: [],
-    providers: [],
-    conversations: [],
-    activeConversationId: null,
-    selectedProviderId: "",
-    selectedModelId: defaultPlaygroundModelId,
-    isSending: false
-  }
+  logs: []
 };
 
 const navList = document.querySelector("#nav-list");
@@ -72,7 +53,6 @@ const metricsGrid = document.querySelector("#metrics-grid");
 const agentPanel = document.querySelector("#agent-panel");
 const networkPanel = document.querySelector("#network-panel");
 const logsPanel = document.querySelector("#logs-panel");
-const page = document.querySelector(".page");
 
 renderNav();
 bindEvents();
@@ -123,11 +103,6 @@ function bindEvents() {
 }
 
 async function loadRoute() {
-  if (isPlaygroundPath()) {
-    await loadPlaygroundPage();
-    return;
-  }
-
   await loadPage();
 }
 
@@ -358,521 +333,6 @@ function renderLogs() {
   });
 }
 
-async function loadPlaygroundPage() {
-  page.classList.add("playground-page");
-  page.innerHTML = `
-    <div class="breadcrumb">控制台 / Playground</div>
-    <section class="playground-shell" aria-label="OpenAsstAI Playground">
-      <aside class="playground-history">
-        <div class="history-toolbar">
-          <div>
-            <div class="eyebrow">Playground</div>
-            <h2>会话历史</h2>
-          </div>
-          <button class="primary-button compact-button" id="new-conversation">新会话</button>
-        </div>
-        <div class="history-summary" id="history-summary">加载会话中</div>
-        <div class="conversation-list" id="conversation-list"></div>
-      </aside>
-
-      <section class="playground-chat">
-        <header class="playground-chat-header">
-          <div class="conversation-heading">
-            <div class="eyebrow">Agent Model Playground</div>
-            <h1 id="conversation-title">新会话</h1>
-            <div class="conversation-updated" id="conversation-updated">本地持久化</div>
-          </div>
-
-          <div class="model-toolbar">
-            <label class="model-field" for="provider-select">
-              <span>Provider</span>
-              <select id="provider-select"></select>
-            </label>
-            <label class="model-field wide" for="model-select">
-              <span>Model</span>
-              <select id="model-select"></select>
-            </label>
-            <div class="active-model-badges" id="active-model-badges"></div>
-          </div>
-        </header>
-
-        <div class="message-list" id="message-list" aria-live="polite"></div>
-
-        <footer class="composer-panel">
-          <div class="quick-prompts" id="quick-prompts"></div>
-          <form class="composer-form" id="composer-form">
-            <textarea id="composer-input" rows="3" placeholder="输入消息，测试当前模型与 Agent 回复风格"></textarea>
-            <button class="primary-button send-button" id="send-message" type="submit">发送</button>
-          </form>
-          <div class="composer-note">
-            P0 使用 mock 响应。真实推理边界保留为用户模型凭证 + OpenAI-compatible /v1/chat/completions。
-          </div>
-        </footer>
-      </section>
-    </section>
-  `;
-
-  const [modelsResponse, conversationsResponse] = await Promise.all([
-    fetchJson("/api/playground/models"),
-    fetchJson("/api/playground/conversations")
-  ]);
-
-  state.playground.models = modelsResponse.models || [];
-  state.playground.providers = modelsResponse.providers || groupModelsByProvider(state.playground.models);
-
-  const localConversations = readPlaygroundConversations();
-  const serverConversations = normalizeServerConversations(conversationsResponse.conversations || []);
-  const conversations = mergeConversations(localConversations, serverConversations);
-  state.playground.conversations = conversations.length ? conversations : [createConversation()];
-  state.playground.activeConversationId =
-    state.playground.conversations.find((conversation) => conversation.id === state.playground.activeConversationId)?.id ||
-    state.playground.conversations[0].id;
-
-  const activeConversation = getActiveConversation();
-  const activeModel = getModelById(activeConversation?.modelId);
-  state.playground.selectedProviderId = activeModel?.providerId || state.playground.providers[0]?.id || "";
-  state.playground.selectedModelId = activeConversation?.modelId || activeModel?.id || state.playground.models[0]?.id || "";
-
-  writePlaygroundConversations();
-  renderPlayground();
-  bindPlaygroundEvents();
-}
-
-function bindPlaygroundEvents() {
-  document.querySelector("#new-conversation")?.addEventListener("click", () => {
-    const conversation = createConversation(state.playground.selectedModelId || defaultPlaygroundModelId);
-    state.playground.conversations.unshift(conversation);
-    state.playground.activeConversationId = conversation.id;
-    writePlaygroundConversations();
-    renderPlayground();
-    focusComposer();
-  });
-
-  document.querySelector("#conversation-list")?.addEventListener("click", (event) => {
-    const target = event.target;
-    const deleteButton = target.closest("[data-delete-conversation]");
-    if (deleteButton) {
-      deleteConversation(deleteButton.dataset.deleteConversation);
-      return;
-    }
-
-    const conversationButton = target.closest("[data-conversation-id]");
-    if (conversationButton) {
-      state.playground.activeConversationId = conversationButton.dataset.conversationId;
-      const conversation = getActiveConversation();
-      const model = getModelById(conversation?.modelId);
-      state.playground.selectedProviderId = model?.providerId || state.playground.selectedProviderId;
-      state.playground.selectedModelId = model?.id || state.playground.selectedModelId;
-      renderPlayground();
-      focusComposer();
-    }
-  });
-
-  document.querySelector("#provider-select")?.addEventListener("change", (event) => {
-    state.playground.selectedProviderId = event.target.value;
-    const nextModel = getModelsForProvider(state.playground.selectedProviderId)[0] || state.playground.models[0];
-    updateActiveConversationModel(nextModel?.id || defaultPlaygroundModelId);
-    renderPlayground();
-  });
-
-  document.querySelector("#model-select")?.addEventListener("change", (event) => {
-    updateActiveConversationModel(event.target.value);
-    renderPlayground();
-  });
-
-  document.querySelector("#quick-prompts")?.addEventListener("click", (event) => {
-    const chip = event.target.closest("[data-quick-prompt]");
-    if (!chip) {
-      return;
-    }
-    const input = document.querySelector("#composer-input");
-    input.value = chip.dataset.quickPrompt;
-    input.focus();
-  });
-
-  document.querySelector("#composer-input")?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      document.querySelector("#composer-form").requestSubmit();
-    }
-  });
-
-  document.querySelector("#composer-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await sendPlaygroundMessage();
-  });
-}
-
-function renderPlayground() {
-  renderConversationList();
-  renderModelSelectors();
-  renderActiveConversation();
-  renderQuickPrompts();
-}
-
-function renderConversationList() {
-  const list = document.querySelector("#conversation-list");
-  const summary = document.querySelector("#history-summary");
-  const conversations = sortedConversations();
-  summary.textContent = `${conversations.length} 个会话 · localStorage 持久化`;
-
-  list.innerHTML = conversations
-    .map((conversation) => {
-      const model = getModelById(conversation.modelId);
-      const active = conversation.id === state.playground.activeConversationId ? " active" : "";
-      const lastMessage = conversation.messages.at(-1);
-      const preview = lastMessage?.content || "空会话，选择模型后开始测试。";
-      return `
-        <article class="conversation-item${active}" data-conversation-id="${escapeHtml(conversation.id)}">
-          <button class="conversation-select" type="button" data-conversation-id="${escapeHtml(conversation.id)}">
-            <span class="conversation-item-title">${escapeHtml(conversation.title || "新会话")}</span>
-            <span class="conversation-item-preview">${escapeHtml(preview)}</span>
-            <span class="conversation-item-meta">
-              ${escapeHtml(model?.providerName || "Provider")} / ${escapeHtml(model?.modelName || "Model")}
-              · ${escapeHtml(formatDate(conversation.updatedAt))}
-            </span>
-          </button>
-          <button class="delete-conversation" type="button" title="删除会话" data-delete-conversation="${escapeHtml(
-            conversation.id
-          )}">×</button>
-        </article>
-      `;
-    })
-    .join("");
-}
-
-function renderModelSelectors() {
-  const providerSelect = document.querySelector("#provider-select");
-  const modelSelect = document.querySelector("#model-select");
-  const conversation = getActiveConversation();
-  const activeModel = getModelById(conversation?.modelId) || state.playground.models[0];
-  const activeProviderId = activeModel?.providerId || state.playground.selectedProviderId;
-  const providerModels = getModelsForProvider(activeProviderId);
-
-  state.playground.selectedProviderId = activeProviderId;
-  state.playground.selectedModelId = activeModel?.id || "";
-
-  providerSelect.innerHTML = state.playground.providers
-    .map(
-      (provider) =>
-        `<option value="${escapeHtml(provider.id)}" ${provider.id === activeProviderId ? "selected" : ""}>${escapeHtml(
-          provider.name
-        )}</option>`
-    )
-    .join("");
-
-  modelSelect.innerHTML = providerModels
-    .map(
-      (model) =>
-        `<option value="${escapeHtml(model.id)}" ${model.id === activeModel?.id ? "selected" : ""}>${escapeHtml(
-          model.displayName
-        )}</option>`
-    )
-    .join("");
-
-  renderActiveModelBadges(activeModel);
-}
-
-function renderActiveModelBadges(model) {
-  const badges = document.querySelector("#active-model-badges");
-  if (!model) {
-    badges.innerHTML = "";
-    return;
-  }
-  badges.innerHTML = `
-    <span class="model-badge provider">${escapeHtml(model.providerName)}</span>
-    <span class="model-badge">${escapeHtml(model.modelName)}</span>
-    <span class="model-badge muted-badge">${escapeHtml(model.contextWindow)} · ${model.latencyMs}ms</span>
-  `;
-}
-
-function renderActiveConversation() {
-  const conversation = getActiveConversation();
-  const title = document.querySelector("#conversation-title");
-  const updated = document.querySelector("#conversation-updated");
-  const messageList = document.querySelector("#message-list");
-  const model = getModelById(conversation?.modelId);
-
-  title.textContent = conversation?.title || "新会话";
-  updated.textContent = conversation
-    ? `最后更新 ${formatDate(conversation.updatedAt)} · ${model?.providerName || "Provider"} / ${model?.modelName || "Model"}`
-    : "选择会话开始测试";
-
-  if (!conversation || conversation.messages.length === 0) {
-    messageList.innerHTML = `
-      <div class="playground-empty">
-        <div class="empty-icon">P</div>
-        <h2>选择模型，开始一次 Agent 对话试验</h2>
-        <p>会话会保存在当前浏览器 localStorage。切换模型会记录在当前会话上，后续消息将带上新的模型身份。</p>
-      </div>
-    `;
-    return;
-  }
-
-  messageList.innerHTML = conversation.messages.map(renderMessage).join("");
-  messageList.scrollTop = messageList.scrollHeight;
-}
-
-function renderMessage(message) {
-  const isUser = message.role === "user";
-  const model = getModelById(message.modelId);
-  const roleLabel = isUser ? "User" : "Assistant";
-  const modelLine = isUser
-    ? "OpenAsstAI Console"
-    : `${message.providerName || model?.providerName || "Provider"} / ${message.modelName || model?.modelName || "Model"}`;
-
-  return `
-    <article class="message-row ${isUser ? "message-user" : "message-assistant"}" id="message-${escapeHtml(message.id)}">
-      <div class="message-avatar">${isUser ? "U" : "A"}</div>
-      <div class="message-bubble">
-        <div class="message-meta">
-          <strong>${roleLabel}</strong>
-          <span>${escapeHtml(modelLine)}</span>
-          ${message.mock ? `<em>Mock/P0</em>` : ""}
-          <time>${escapeHtml(formatDate(message.createdAt))}</time>
-        </div>
-        <div class="message-content">${escapeHtml(message.content).replaceAll("\n", "<br />")}</div>
-      </div>
-    </article>
-  `;
-}
-
-function renderQuickPrompts() {
-  const promptRoot = document.querySelector("#quick-prompts");
-  promptRoot.innerHTML = quickPrompts
-    .map(
-      (prompt) =>
-        `<button class="prompt-chip" type="button" data-quick-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`
-    )
-    .join("");
-}
-
-async function sendPlaygroundMessage() {
-  if (state.playground.isSending) {
-    return;
-  }
-
-  const input = document.querySelector("#composer-input");
-  const content = input.value.trim();
-  if (!content) {
-    toast("请输入要测试的消息。");
-    return;
-  }
-
-  let conversation = getActiveConversation();
-  if (!conversation) {
-    conversation = createConversation(state.playground.selectedModelId || defaultPlaygroundModelId);
-    state.playground.conversations.unshift(conversation);
-    state.playground.activeConversationId = conversation.id;
-  }
-
-  const now = new Date().toISOString();
-  const userMessage = {
-    id: `user-${Date.now()}`,
-    role: "user",
-    content,
-    createdAt: now
-  };
-  conversation.messages.push(userMessage);
-  conversation.title = conversation.title === "新会话" ? deriveConversationTitle(content) : conversation.title;
-  conversation.updatedAt = now;
-  input.value = "";
-  state.playground.isSending = true;
-  renderPlayground();
-  setComposerDisabled(true);
-
-  try {
-    const response = await fetchJson("/api/playground/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        conversationId: conversation.id,
-        modelId: conversation.modelId,
-        messages: conversation.messages
-      })
-    });
-    conversation.messages.push(response.message);
-    conversation.updatedAt = response.message.createdAt || new Date().toISOString();
-    writePlaygroundConversations();
-    renderPlayground();
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "未知错误";
-    conversation.messages.push({
-      id: `asst-error-${Date.now()}`,
-      role: "assistant",
-      content: `【Mock/P0】请求 Playground API 失败：${errorMessage}`,
-      modelId: conversation.modelId,
-      mock: true,
-      createdAt: new Date().toISOString()
-    });
-    writePlaygroundConversations();
-    renderPlayground();
-  } finally {
-    state.playground.isSending = false;
-    setComposerDisabled(false);
-    focusComposer();
-  }
-}
-
-function updateActiveConversationModel(modelId) {
-  const model = getModelById(modelId) || state.playground.models[0];
-  const conversation = getActiveConversation();
-  if (!model || !conversation) {
-    return;
-  }
-  conversation.modelId = model.id;
-  conversation.providerId = model.providerId;
-  conversation.updatedAt = new Date().toISOString();
-  state.playground.selectedProviderId = model.providerId;
-  state.playground.selectedModelId = model.id;
-  writePlaygroundConversations();
-}
-
-function deleteConversation(conversationId) {
-  const conversations = state.playground.conversations;
-  if (conversations.length <= 1) {
-    const conversation = conversations[0];
-    conversation.messages = [];
-    conversation.title = "新会话";
-    conversation.updatedAt = new Date().toISOString();
-    writePlaygroundConversations();
-    renderPlayground();
-    return;
-  }
-
-  state.playground.conversations = conversations.filter((conversation) => conversation.id !== conversationId);
-  if (state.playground.activeConversationId === conversationId) {
-    state.playground.activeConversationId = sortedConversations()[0]?.id || state.playground.conversations[0]?.id;
-  }
-  writePlaygroundConversations();
-  renderPlayground();
-}
-
-function createConversation(modelId = defaultPlaygroundModelId) {
-  const model = getModelById(modelId) || state.playground.models[0] || {
-    id: defaultPlaygroundModelId,
-    providerId: "custom_subrouter"
-  };
-  const now = new Date().toISOString();
-  return {
-    id: `pg-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    title: "新会话",
-    modelId: model.id,
-    providerId: model.providerId,
-    createdAt: now,
-    updatedAt: now,
-    messages: []
-  };
-}
-
-function readPlaygroundConversations() {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(playgroundStorageKey) || "[]");
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.map(normalizeConversation).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function writePlaygroundConversations() {
-  window.localStorage.setItem(playgroundStorageKey, JSON.stringify(state.playground.conversations));
-}
-
-function normalizeServerConversations(conversations) {
-  return conversations.map(normalizeConversation).filter(Boolean);
-}
-
-function normalizeConversation(conversation) {
-  if (!conversation || typeof conversation !== "object") {
-    return null;
-  }
-  const modelId = getModelById(conversation.modelId)?.id || defaultPlaygroundModelId;
-  return {
-    id: String(conversation.id || `pg-${Date.now()}`),
-    title: String(conversation.title || "新会话"),
-    modelId,
-    providerId: String(conversation.providerId || getModelById(modelId)?.providerId || "custom_subrouter"),
-    createdAt: conversation.createdAt || new Date().toISOString(),
-    updatedAt: conversation.updatedAt || conversation.createdAt || new Date().toISOString(),
-    messages: Array.isArray(conversation.messages)
-      ? conversation.messages
-          .filter((message) => message && (message.role === "user" || message.role === "assistant"))
-          .map((message) => ({
-            id: String(message.id || `msg-${Date.now()}`),
-            role: message.role,
-            content: String(message.content || ""),
-            modelId: message.modelId,
-            providerName: message.providerName,
-            modelName: message.modelName,
-            mock: Boolean(message.mock),
-            createdAt: message.createdAt || new Date().toISOString()
-          }))
-      : []
-  };
-}
-
-function mergeConversations(localConversations, serverConversations) {
-  const byId = new Map();
-  [...serverConversations, ...localConversations].forEach((conversation) => {
-    byId.set(conversation.id, conversation);
-  });
-  return [...byId.values()].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
-
-function sortedConversations() {
-  return [...state.playground.conversations].sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-  );
-}
-
-function getActiveConversation() {
-  return state.playground.conversations.find((conversation) => conversation.id === state.playground.activeConversationId);
-}
-
-function getModelById(modelId) {
-  return state.playground.models.find((model) => model.id === modelId);
-}
-
-function getModelsForProvider(providerId) {
-  return state.playground.models.filter((model) => model.providerId === providerId);
-}
-
-function groupModelsByProvider(models) {
-  return models.reduce((result, model) => {
-    const provider = result.find((item) => item.id === model.providerId);
-    if (provider) {
-      provider.models.push(model);
-    } else {
-      result.push({ id: model.providerId, name: model.providerName, models: [model] });
-    }
-    return result;
-  }, []);
-}
-
-function deriveConversationTitle(content) {
-  return content.length > 20 ? `${content.slice(0, 20)}...` : content;
-}
-
-function setComposerDisabled(disabled) {
-  const input = document.querySelector("#composer-input");
-  const button = document.querySelector("#send-message");
-  if (input) {
-    input.disabled = disabled;
-  }
-  if (button) {
-    button.disabled = disabled;
-    button.textContent = disabled ? "生成中" : "发送";
-  }
-}
-
-function focusComposer() {
-  window.requestAnimationFrame(() => {
-    document.querySelector("#composer-input")?.focus();
-  });
-}
-
 async function handleSearch() {
   const q = searchInput.value.trim();
   if (!q) {
@@ -956,24 +416,11 @@ function extractInstanceId() {
   return match?.[1];
 }
 
-function isPlaygroundPath() {
-  return window.location.pathname === "/playground" || window.location.pathname === "/console/playground";
-}
-
 function navHref(label) {
-  if (label === "Playground") {
-    return "/console/playground";
-  }
   return "/console/hermes/instances/ins-hermes-001";
 }
 
 function isNavActive(label) {
-  if (label === "Playground") {
-    return isPlaygroundPath();
-  }
-  if (isPlaygroundPath()) {
-    return false;
-  }
   return label === "我的 Agent" || label === "My Agents";
 }
 
@@ -1003,7 +450,6 @@ function labelIcon(label) {
   const icons = new Map([
     ["我的 Agent", "A"],
     ["Agent 实例", "I"],
-    ["Playground", "P"],
     ["模型", "M"],
     ["通道", "C"],
     ["技能", "S"],

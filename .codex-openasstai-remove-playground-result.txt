@@ -1,0 +1,26 @@
+Removed the mistaken OpenAsstAI Playground feature only.
+
+Changed:
+- `openasstai-platform/src/client/app.js`
+- `openasstai-platform/src/client/styles.css`
+- `openasstai-platform/src/server/index.js`
+- `openasstai-platform/src/server/data/mockData.js`
+- `openasstai-platform/README.md`
+- Added `.codex-openasstai-remove-playground-result.txt`
+
+Verification:
+- `cd openasstai-platform && npm run build` passed.
+- Active app searches for `Playground`, `api/playground`, `openasstai.playground`, `playground-`, and lowercase `playground` returned no matches.
+- Confirmed Agent-first nav entries remain.
+- `git diff --stat`:
+
+```text
+openasstai-platform/README.md                   |   8 -
+openasstai-platform/src/client/app.js           | 556 +-----------------------
+openasstai-platform/src/client/styles.css       | 478 --------------------
+openasstai-platform/src/server/data/mockData.js |  92 ----
+openasstai-platform/src/server/index.js         |  70 +--
+5 files changed, 2 insertions(+), 1202 deletions(-)
+```
+
+No commit or push performed.

@@ -6,11 +6,8 @@ import {
   agents,
   findAgent,
   findInstance,
-  findPlaygroundModel,
   instances,
-  logs,
-  playgroundModels,
-  playgroundServerConversations
+  logs
 } from "./data/mockData.js";
 import { OpenNebulaAdapter } from "./adapters/opennebula/index.js";
 
@@ -89,11 +86,6 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && url.pathname === "/api/instances") {
     sendJson(res, 200, { instances });
-    return;
-  }
-
-  if (parts[0] === "api" && parts[1] === "playground") {
-    await handlePlaygroundApi(req, res, parts.slice(2));
     return;
   }
 
@@ -192,66 +184,6 @@ async function handleInstanceApi(req, res, instanceId, tail) {
   }
 
   sendJson(res, 404, { error: "not_found", message: "Agent API route not found" });
-}
-
-async function handlePlaygroundApi(req, res, tail) {
-  const method = req.method || "GET";
-  const route = tail.join("/");
-
-  if (method === "GET" && route === "models") {
-    const providers = playgroundModels.reduce((result, model) => {
-      const provider = result.find((item) => item.id === model.providerId);
-      if (provider) {
-        provider.models.push(model);
-      } else {
-        result.push({
-          id: model.providerId,
-          name: model.providerName,
-          models: [model]
-        });
-      }
-      return result;
-    }, []);
-    sendJson(res, 200, { models: playgroundModels, providers });
-    return;
-  }
-
-  if (method === "GET" && route === "conversations") {
-    sendJson(res, 200, { conversations: playgroundServerConversations });
-    return;
-  }
-
-  if (method === "POST" && route === "chat") {
-    const body = await readJsonBody(req);
-    const messages = Array.isArray(body.messages) ? body.messages : [];
-    const requestedModelId = typeof body.modelId === "string" ? body.modelId : "";
-    const model = findPlaygroundModel(requestedModelId) || playgroundModels[0];
-    const lastUserMessage = [...messages].reverse().find((message) => message?.role === "user");
-    const userText = String(lastUserMessage?.content || "").trim();
-    const summary = userText.length > 180 ? `${userText.slice(0, 180)}...` : userText || "空消息";
-
-    sendJson(res, 200, {
-      conversationId: body.conversationId || `pg-${Date.now()}`,
-      mock: true,
-      integrationBoundary: "Future integration should proxy OpenAI-compatible /v1/chat/completions with user model credentials.",
-      message: {
-        id: `asst-${Date.now()}`,
-        role: "assistant",
-        content:
-          `【Mock/P0】${model.providerName} / ${model.modelName} 已接收 ${messages.length} 条上下文。` +
-          `\n\n用户最新输入：${summary}` +
-          "\n\n下一步真实接入点：通过用户配置的模型凭证调用 OpenAI-compatible `/v1/chat/completions`，并将流式 token 回写到当前会话。",
-        modelId: model.id,
-        providerName: model.providerName,
-        modelName: model.modelName,
-        mock: true,
-        createdAt: new Date().toISOString()
-      }
-    });
-    return;
-  }
-
-  sendJson(res, 404, { error: "not_found", message: "Playground API route not found" });
 }
 
 async function serveClient(res, requestedPath) {

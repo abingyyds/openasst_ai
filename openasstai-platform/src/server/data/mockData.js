@@ -118,102 +118,10 @@ export const logs = {
   ]
 };
 
-export const playgroundModels = [
-  {
-    id: "custom_subrouter/hy3-preview",
-    providerId: "custom_subrouter",
-    providerName: "custom_subrouter",
-    modelName: "Hy3 preview",
-    displayName: "Hy3 preview",
-    latencyMs: 86,
-    contextWindow: "128K",
-    badge: "Preview",
-    description: "OpenAsstAI custom_subrouter preview route for Agent-first model testing."
-  },
-  {
-    id: "subrouter/claude-sonnet",
-    providerId: "subrouter",
-    providerName: "SubRouter",
-    modelName: "Claude Sonnet",
-    displayName: "Claude Sonnet",
-    latencyMs: 112,
-    contextWindow: "200K",
-    badge: "Reasoning",
-    description: "Mock SubRouter Claude Sonnet profile for multi-turn Agent planning tests."
-  },
-  {
-    id: "openrouter/gpt-5-chat",
-    providerId: "openrouter",
-    providerName: "OpenRouter",
-    modelName: "GPT-5 Chat",
-    displayName: "GPT-5 Chat",
-    latencyMs: 124,
-    contextWindow: "256K",
-    badge: "General",
-    description: "Mock OpenRouter GPT-5 Chat profile for OpenAI-compatible request shaping."
-  },
-  {
-    id: "tencent-hunyuan/hy3-preview",
-    providerId: "tencent-hunyuan",
-    providerName: "Tencent Hunyuan",
-    modelName: "Hy3 Preview",
-    displayName: "Hy3 Preview",
-    latencyMs: 98,
-    contextWindow: "128K",
-    badge: "CN",
-    description: "Mock Tencent Hunyuan Hy3 Preview profile for domestic provider validation."
-  },
-  {
-    id: "ollama/qwen",
-    providerId: "ollama",
-    providerName: "Ollama local",
-    modelName: "Qwen",
-    displayName: "Qwen",
-    latencyMs: 34,
-    contextWindow: "32K",
-    badge: "Local",
-    description: "Mock local Ollama Qwen profile for workstation-side Agent experiments."
-  }
-];
-
-export const playgroundServerConversations = [
-  {
-    id: "pg-sample-hy3",
-    title: "Hy3 路由试验",
-    modelId: "custom_subrouter/hy3-preview",
-    providerId: "custom_subrouter",
-    createdAt: "2026-05-26T00:35:00.000Z",
-    updatedAt: "2026-05-26T00:58:00.000Z",
-    messages: [
-      {
-        id: "msg-sample-user-1",
-        role: "user",
-        content: "帮我验证 Hermes Agent 的课程助手回复风格。",
-        createdAt: "2026-05-26T00:35:00.000Z"
-      },
-      {
-        id: "msg-sample-assistant-1",
-        role: "assistant",
-        content:
-          "【Mock/P0】custom_subrouter / Hy3 preview 已收到样例上下文。真实推理将在模型凭证和 OpenAI-compatible inference proxy 接入后启用。",
-        modelId: "custom_subrouter/hy3-preview",
-        providerName: "custom_subrouter",
-        modelName: "Hy3 preview",
-        mock: true,
-        createdAt: "2026-05-26T00:35:04.000Z"
-      }
-    ]
-  }
-];
-
 export function findInstance(instanceId) {
   return instances.find((instance) => instance.id === instanceId);
 }
 
 export function findAgent(instanceId) {
   return agents[instanceId];
-}
-
-export function findPlaygroundModel(modelId) {
-  return playgroundModels.find((model) => model.id === modelId);
 }

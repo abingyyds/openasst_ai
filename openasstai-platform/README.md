@@ -14,10 +14,6 @@ npm run dev
 
 Open `http://localhost:3000/console/hermes/instances/ins-hermes-001`.
 
-The Cherry Studio-inspired model Playground is available at `http://localhost:3000/console/playground` and also works at `/playground`.
-It includes a provider/model picker, conversation history rail, localStorage session persistence, quick prompts, and a P0 mock assistant response flow.
-Responses stay mock until user model credentials and the OpenAI-compatible inference proxy for `/v1/chat/completions` are wired.
-
 ## Build And Start
 
 ```bash
@@ -52,9 +48,6 @@ Keep OpenNebula controllers, Agent runtime carriers, WeChat/QQ gateways, SkillHu
 - `POST /api/instances/:id/agent/skills`
 - `POST /api/instances/:id/agent/actions/restart`
 - `GET /api/instances/:id/agent/logs`
-- `GET /api/playground/models`
-- `GET /api/playground/conversations`
-- `POST /api/playground/chat`
 
 ## OpenNebula Adapter Boundary
 
@@ -77,4 +70,3 @@ When `OPENNEBULA_XMLRPC_URL`, `OPENNEBULA_USERNAME`, and `OPENNEBULA_PASSWORD` a
 - Data is in-memory mock/sample data.
 - Authentication, tenant isolation, persistence, billing, audit trails, live terminal, and provider provisioning are not implemented yet.
 - Model, channel, and skill mutations update process memory only.
-- Playground conversations persist in browser localStorage for P0; server conversations and assistant replies are mock samples.
