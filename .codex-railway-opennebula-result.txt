@@ -1,0 +1,26 @@
+Done. I wrote:
+
+- [CODEX_RAILWAY_OPENNEBULA_REPORT.md](/Users/minihanshi/project/openasstai/CODEX_RAILWAY_OPENNEBULA_REPORT.md)
+- [.codex-railway-opennebula-result.txt](/Users/minihanshi/project/openasstai/.codex-railway-opennebula-result.txt)
+
+Verdict: full OpenNebula on Railway is not feasible; best path is external OpenNebula controller plus Railway-hosted OpenAsstAI UI/API proxy or wrapped FireEdge slice. I did not make product-code changes, install packages, or run destructive commands.
+
+Key public sources used include OpenNebula docs for [front-end install](https://docs.opennebula.io/7.2/software/installation_process/frontend_installation/overview/) and [KVM nodes](https://docs.opennebula.io/7.2/software/installation_process/cluster_installation/kvm_node_installation/), plus Railway docs for [Dockerfiles](https://docs.railway.com/builds/dockerfiles), [public networking](https://docs.railway.com/networking/public-networking), [volumes](https://docs.railway.com/volumes), and [TCP proxy](https://docs.railway.com/networking/tcp-proxy).
+
+Git status:
+
+```text
+## main...origin/main
+?? .codex-railway-opennebula-result.txt
+?? .codex-railway-opennebula-run.log
+?? .codex-railway-opennebula-run2.log
+?? CODEX_RAILWAY_OPENNEBULA_MISSION.md
+?? CODEX_RAILWAY_OPENNEBULA_REPORT.md
+```
+
+Diff stat for added report artifacts:
+
+```text
+CODEX_RAILWAY_OPENNEBULA_REPORT.md        | 397 insertions(+)
+.codex-railway-opennebula-result.txt      |  11 insertions(+)
+```
